@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
-use crate::{Analysis, Diagnostic, Engine, Source, Suggestion, recase};
+use crate::{Analysis, Diagnostic, Engine, Source, Suggestion, capitalize_first, recase};
 
 /// Whether `c` is a Unicode nonspacing mark (`Mn`) — a combining diacritic. Such marks are never an
 /// independently-spellable unit, so the spell layer treats them as transparent: they don't count
@@ -85,6 +85,10 @@ pub fn fuzz_edits1(word: &str, alphabet: &str) -> usize {
 }
 
 /// Edit-distance-1 corrections that the engine recognizes, re-cased to match `word`, ranked.
+///
+/// Candidates are tried as generated (lower case) and with a capitalised first letter, because
+/// lexicons like German's list nouns only in capitalised form: a lower-case-only lookup could never
+/// suggest "Hypothese" for "Hypotese" or "Messung" for "messung".
 fn suggestions<E: Engine>(engine: &E, word: &str, alphabet: &[char]) -> Vec<Suggestion> {
     // Strip combining marks before generating edits so candidates are base-letter forms the lexicon
     // knows (the engine's `is_known` normalizes the same way). No-op for mark-free en/de/ru words.
@@ -93,18 +97,88 @@ fn suggestions<E: Engine>(engine: &E, word: &str, alphabet: &[char]) -> Vec<Sugg
         .chars()
         .filter(|c| !is_combining_mark(*c))
         .collect();
-    let known: BTreeSet<String> = edits1(&lower, alphabet)
-        .into_iter()
-        .filter(|cand| engine.is_known(cand))
-        .collect();
-
-    known
+    let typed_upper = word.chars().next().is_some_and(char::is_uppercase);
+    let mut best: std::collections::BTreeMap<String, f32> = std::collections::BTreeMap::new();
+    // A word that is only mis-cased (German "messung" for "Messung") is the likeliest correction.
+    let recased = capitalize_first(&lower);
+    if recased != word && engine.is_known(&recased) {
+        best.insert(recased, 0.2);
+    }
+    for (cand, cost) in scored_edits1(&lower, alphabet) {
+        let plain = engine.is_known(&cand).then(|| (recase(word, &cand), cost));
+        let caps = capitalize_first(&cand);
+        let capped = (plain.is_none() && caps != cand && engine.is_known(&caps))
+            .then(|| (caps, cost + if typed_upper { 0.0 } else { 0.3 }));
+        for (form, c) in plain.into_iter().chain(capped) {
+            best.entry(form)
+                .and_modify(|old| *old = old.min(c))
+                .or_insert(c);
+        }
+    }
+    let mut ranked: Vec<(String, f32)> = best.into_iter().collect();
+    // Lowest cost first; ties: closest length to the typed word, then alphabetical (stable, BTreeMap order).
+    let len = word.chars().count();
+    ranked.sort_by(|a, b| {
+        a.1.total_cmp(&b.1).then_with(|| {
+            a.0.chars()
+                .count()
+                .abs_diff(len)
+                .cmp(&b.0.chars().count().abs_diff(len))
+        })
+    });
+    ranked
         .into_iter()
         .take(MAX_SUGGESTIONS)
-        .map(|cand| Suggestion {
-            replacement: recase(word, &cand),
-        })
+        .map(|(replacement, _)| Suggestion { replacement })
         .collect()
+}
+
+/// Edit-distance-1 candidates with a plausibility cost (lower = more likely a real typo): swapped
+/// neighbours are cheapest, then doubled-letter slips, then single missing/extra/wrong letters; an edit
+/// at the first letter is penalised because people rarely mistype how a word starts.
+fn scored_edits1(word: &str, alphabet: &[char]) -> Vec<(String, f32)> {
+    let chars: Vec<char> = word.chars().collect();
+    let n = chars.len();
+    let build = |cs: &[char]| cs.iter().collect::<String>();
+    let first = |i: usize| if i == 0 { 1.0 } else { 0.0 };
+    let mut out: std::collections::BTreeMap<String, f32> = std::collections::BTreeMap::new();
+    let mut put = |s: String, cost: f32| {
+        out.entry(s)
+            .and_modify(|c| *c = c.min(cost))
+            .or_insert(cost);
+    };
+    for i in 0..n {
+        // Delete (an extra letter, cheaper if it doubled its neighbour).
+        let mut s = chars.clone();
+        s.remove(i);
+        let doubled =
+            (i > 0 && chars[i] == chars[i - 1]) || (i + 1 < n && chars[i] == chars[i + 1]);
+        put(build(&s), if doubled { 0.6 } else { 1.0 } + first(i));
+    }
+    for i in 0..n.saturating_sub(1) {
+        let mut s = chars.clone();
+        s.swap(i, i + 1);
+        put(build(&s), 0.5 + first(i));
+    }
+    for i in 0..n {
+        for &c in alphabet {
+            if c == chars[i] {
+                continue;
+            }
+            let mut s = chars.clone();
+            s[i] = c;
+            put(build(&s), 1.2 + first(i));
+        }
+    }
+    for i in 0..=n {
+        for &c in alphabet {
+            let mut s = chars.clone();
+            s.insert(i, c);
+            let doubled = (i > 0 && chars[i - 1] == c) || (i < n && chars[i] == c);
+            put(build(&s), if doubled { 0.7 } else { 1.0 } + first(i));
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// All strings one edit (delete / transpose / replace / insert from `alphabet`) away from `word`.
@@ -362,5 +436,41 @@ mod tests {
             // Every candidate is valid UTF-8 (it's a String) and contains no replacement char.
             assert!(cands.iter().all(|c| !c.contains('\u{fffd}')));
         }
+    }
+
+    /// Case-sensitive lexicon, like German's: nouns are listed capitalised only.
+    struct CaseEngine(&'static [&'static str]);
+
+    impl Engine for CaseEngine {
+        fn analyze(&self, _text: &str) -> Analysis {
+            Analysis::default()
+        }
+        fn is_known(&self, word: &str) -> bool {
+            self.0.contains(&word)
+        }
+    }
+
+    fn top(engine: &impl Engine, word: &str) -> Vec<String> {
+        let alphabet: Vec<char> = ASCII_ALPHABET.chars().collect();
+        suggestions(engine, word, &alphabet)
+            .into_iter()
+            .map(|s| s.replacement)
+            .collect()
+    }
+
+    #[test]
+    fn suggestions_rank_swaps_and_doubled_letters_first() {
+        let engine = FakeEngine {
+            lexicon: &["receive", "relieve", "recipe", "address", "dress"],
+        };
+        assert_eq!(top(&engine, "recieve")[0], "receive"); // swapped neighbours
+        assert_eq!(top(&engine, "adress")[0], "address"); // missing doubled letter
+    }
+
+    #[test]
+    fn suggestions_find_capitalised_nouns_for_lower_case_candidates() {
+        let engine = CaseEngine(&["Hypothese", "Messung"]);
+        assert_eq!(top(&engine, "Hypotese"), ["Hypothese"]);
+        assert_eq!(top(&engine, "messung"), ["Messung"]);
     }
 }

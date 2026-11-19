@@ -246,6 +246,8 @@ impl<B: Engine + GrammarChecker> Checker<B> {
         );
         diagnostics.extend(self.backend.grammar_diagnostics(text, &analysis));
         strip_noop_suggestions(text, &mut diagnostics);
+        absorb_leading_space(text, &mut diagnostics);
+        merge_equivalent(text, &mut diagnostics);
         diagnostics.sort_by_key(|d| d.span.start);
         diagnostics
     }
@@ -272,6 +274,72 @@ fn strip_noop_suggestions(text: &str, diagnostics: &mut Vec<Diagnostic>) {
         d.suggestions.retain(|s| s.replacement != spanned);
         !d.suggestions.is_empty()
     });
+}
+
+/// A comma-led fix (", dass") replacing a span that starts right after a space would leave that space
+/// in front of the comma ("zeigt , dass"). LanguageTool's marker covers the space in such rules, but the
+/// token-based span does not, so extend the span back over the whitespace it must absorb.
+fn absorb_leading_space(text: &str, diagnostics: &mut [Diagnostic]) {
+    const PUNCT: &[char] = &[',', '.', ';', ':', '!', '?'];
+    for d in diagnostics
+        .iter_mut()
+        .filter(|d| d.source == Source::Grammar)
+    {
+        let all_punct_led = !d.suggestions.is_empty()
+            && d.suggestions
+                .iter()
+                .all(|s| s.replacement.starts_with(PUNCT));
+        if !all_punct_led {
+            continue;
+        }
+        let Some(before) = text.get(..d.span.start) else {
+            continue;
+        };
+        let trimmed = before.trim_end_matches(|c: char| c.is_whitespace() && c != '\n');
+        d.span.start = trimmed.len();
+    }
+}
+
+/// Collapse findings that point at the same problem: two diagnostics whose spans overlap and whose
+/// first suggestion produces the *same corrected text* (e.g. LT's `KOMMA_ZWISCHEN_HAUPT_UND_NEBENSATZ_2`
+/// "zeigt dass" -> "zeigt, dass" and `SUBJUNKTION_KOMMA` "dass" -> ", dass") are one issue to the
+/// writer. The one with the narrower span stays (ties: the earlier one), so the editor marks as little
+/// text as possible. Findings without suggestions, and spelling findings, are never merged.
+fn merge_equivalent(text: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let fixed = |d: &Diagnostic| -> Option<String> {
+        let s = d.suggestions.first()?;
+        let (a, b) = (d.span.start, d.span.end);
+        Some(format!(
+            "{}{}{}",
+            text.get(..a)?,
+            s.replacement,
+            text.get(b..)?
+        ))
+    };
+    let results: Vec<Option<String>> = diagnostics
+        .iter()
+        .map(|d| (d.source == Source::Grammar).then(|| fixed(d)).flatten())
+        .collect();
+    let mut drop = vec![false; diagnostics.len()];
+    for i in 0..diagnostics.len() {
+        for j in (i + 1)..diagnostics.len() {
+            if drop[i] || drop[j] || results[i].is_none() || results[i] != results[j] {
+                continue;
+            }
+            let (a, b) = (&diagnostics[i].span, &diagnostics[j].span);
+            if a.start >= b.end || b.start >= a.end {
+                continue; // not overlapping
+            }
+            let (wa, wb) = (a.end - a.start, b.end - b.start);
+            if wb < wa {
+                drop[i] = true;
+            } else {
+                drop[j] = true;
+            }
+        }
+    }
+    let mut keep = drop.into_iter().map(|d| !d);
+    diagnostics.retain(|_| keep.next().unwrap_or(true));
 }
 
 /// Composes a separate [`Engine`] and [`GrammarChecker`] into one backend — e.g. nlprule for
@@ -458,5 +526,30 @@ mod boundary_tests {
         assert!(!is_valid_span(S, 0, 3), "3 is mid-character");
         assert!(!is_valid_span(S, 0, 999), "past the end");
         assert!(!is_valid_span(S, 4, 2), "inverted");
+    }
+
+    #[test]
+    fn merges_overlapping_findings_with_the_same_fix() {
+        let text = "Wir wissen dass es geht";
+        let mk = |start: usize, end: usize, rep: &str, code: &str| Diagnostic {
+            span: Span { start, end },
+            code: code.to_owned(),
+            message: String::new(),
+            suggestions: vec![Suggestion {
+                replacement: rep.to_owned(),
+            }],
+            source: Source::Grammar,
+            details: None,
+        };
+        let mut d = vec![
+            mk(4, 15, "wissen, dass", "WIDE"),
+            mk(11, 15, ", dass", "NARROW"),
+            mk(16, 18, "xx", "OTHER"),
+        ];
+        absorb_leading_space(text, &mut d);
+        assert_eq!(d[1].span.start, 10); // the space before "dass" is absorbed
+        merge_equivalent(text, &mut d);
+        let codes: Vec<_> = d.iter().map(|x| x.code.as_str()).collect();
+        assert_eq!(codes, ["NARROW", "OTHER"]);
     }
 }

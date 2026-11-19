@@ -456,7 +456,7 @@ pub static DE: LangConfig = LangConfig {
         neural_l4: false,
     },
     spell: SpellConfig {
-        alphabet: "abcdefghijklmnopqrstuvwxyz",
+        alphabet: "abcdefghijklmnopqrstuvwxyzäöüß",
         message: "Möglicher Tippfehler gefunden.",
     },
     normalization: Normalization::None,
