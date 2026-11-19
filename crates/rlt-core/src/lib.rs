@@ -302,6 +302,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
         diagnostics.extend(self.backend.grammar_diagnostics(text, &analysis));
         if self.german_agreement {
             diagnostics.extend(agree::german_agreement(&analysis));
+            diagnostics.extend(agree::german_case(&analysis));
         }
         if self.spanish_agreement {
             diagnostics.extend(agree::spanish_agreement(&analysis));

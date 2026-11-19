@@ -987,3 +987,76 @@ mod en_tests {
         assert!(english_agreement(&ok).is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// German capitalisation (implemented from the observable behaviour of the rule, not from LT's Java):
+// capitalised non-nouns inside a sentence ("Wir haben Gestern gearbeitet"). Lowercase nouns that are not
+// valid lowercase words ("der hund") are reported by the spell checker, and "beim essen" by an XML rule.
+// ---------------------------------------------------------------------------------------------
+
+/// Capitalised words that are legitimate inside a sentence although they carry no noun reading.
+const DE_ALWAYS_CAP: &[&str] = &["sie", "ihr", "ihnen", "ihre", "ihrer", "ihrem", "ihren", "ihres", "du", "dich", "dir", "dein", "deine"];
+
+/// Words after which a capitalised adjective/verb is a nominalisation ("das Gehen", "im Folgenden").
+fn nominalising_context(prev: &Token) -> bool {
+    let p = prev.text.to_lowercase();
+    prev.tags.iter().any(|g| {
+        g.starts_with("ART:") || g.starts_with("PRP") || g.starts_with("PRO:POS") || g.starts_with("PRO:IND") || g.starts_with("PRO:DEM") || g.starts_with("ADJ:") || g.starts_with("ZAL") || g == "KON:UNT"
+    }) || matches!(
+        p.as_str(),
+        "beim" | "im" | "zum" | "zur" | "vom" | "am" | "ans" | "ins" | "aufs" | "etwas" | "nichts" | "alles" | "viel" | "wenig" | "allerlei"
+            | "das" | "dem" | "des" | "ein" | "eine" | "einem" | "einen" | "einer" | "eines" | "mein" | "dein" | "sein" | "unser" | "euer"
+            | "und" | "oder" | "sowie" | "als" | "wie" | "bis" | "für" | "mit" | "von" | "zu" | "in" | "an" | "auf" | "aus" | "bei" | "nach" | "über" | "unter" | "um" | "durch" | "gegen" | "ohne" | "vor" | "hinter" | "neben" | "zwischen" | "statt" | "trotz" | "wegen" | "während" | "dank"
+    )
+}
+
+pub(crate) fn german_case(analysis: &Analysis) -> Vec<Diagnostic> {
+    let toks = &analysis.tokens;
+    let mut out = Vec::new();
+    for i in 1..toks.len() {
+        let t = &toks[i];
+        let prev = &toks[i - 1];
+        if !t.text.chars().any(char::is_alphabetic) {
+            continue;
+        }
+        let first_upper = t.text.chars().next().is_some_and(char::is_uppercase);
+        let lower = t.text.to_lowercase();
+        if first_upper {
+            // Capitalised word inside a sentence without any noun/name reading.
+            if en_has(prev, "SENT_START")
+                || prev.text.chars().all(|c| !c.is_alphanumeric())
+                || t.text.chars().count() < 2
+                || t.text.chars().all(char::is_uppercase)
+                || t.text.contains('-')
+                || DE_ALWAYS_CAP.contains(&lower.as_str())
+                || nominalising_context(prev)
+                || t.tags.is_empty()
+                // The tagger guesses unknown (compound) nouns as verbs and uses the capitalised
+                // surface as lemma: not a real verb/adverb.
+                || t.lemmas.iter().any(|l| l.chars().next().is_some_and(char::is_uppercase))
+            {
+                continue;
+            }
+            let non_noun = t.tags.iter().all(|g| {
+                // Adjectives are left out on purpose: nominalised adjectives ("Neues", "Italienisch") and
+                // names ("Lahm") are capitalised legitimately.
+                g.starts_with("ADV") || g.starts_with("VER:") || g.starts_with("PA2") || g.starts_with("KON") || g.starts_with("PRP")
+            });
+            let after_cap_word = is_cap(prev) && !en_has(prev, "SENT_START");
+            // The following word must not make it part of a name or compound ("Gesagt Getan").
+            let next_cap = toks.get(i + 1).is_some_and(|n| is_cap(n) && !en_has(n, "SENT_START"));
+            if !non_noun || next_cap || after_cap_word {
+                continue;
+            }
+            out.push(Diagnostic {
+                span: t.span,
+                code: "DE_CASE_RLT".into(),
+                message: "Dieses Wort wird hier kleingeschrieben.".into(),
+                suggestions: vec![Suggestion { replacement: lower }],
+                source: Source::Grammar,
+                details: None,
+            });
+        }
+    }
+    out
+}
