@@ -520,6 +520,10 @@ fn compile_constraint(
 
 /// Compile a whole-token-anchored regex (optionally case-insensitive). `None` on regex error.
 fn anchored(pattern: &str, case_insensitive: bool) -> Option<Regex> {
+    // `\p{Lu}`/`\p{Ll}` under `(?i)` match every letter. LanguageTool rules rely on them to mean
+    // "upper/lower case" (e.g. the Spanish `_possible_NP` rule), so such patterns stay case-sensitive.
+    let case_insensitive = case_insensitive
+        && !["\\p{Lu}", "\\p{Ll}", "\\p{Lt}"].iter().any(|c| pattern.contains(c));
     let prefix = if case_insensitive { "(?i)" } else { "" };
     Regex::new(&format!("{prefix}^(?:{pattern})$")).ok()
 }
@@ -924,14 +928,32 @@ fn apply_action(action: &CompiledAction, token: &mut Token) {
             }
         }
         CompiledAction::Remove { tags, lemmas } => {
-            token.tags.retain(|t| !tags.iter().any(|m| m.matches(t)));
+            // A disambiguation rule must never strip every reading: a token without tags is invisible
+            // to all later grammar rules.
+            let kept: Vec<String> = token
+                .tags
+                .iter()
+                .filter(|t| !tags.iter().any(|m| m.matches(t)))
+                .cloned()
+                .collect();
+            if !kept.is_empty() || token.tags.is_empty() {
+                token.tags = kept;
+            }
             if !lemmas.is_empty() {
                 token.lemmas.retain(|l| !lemmas.iter().any(|rm| rm == l));
             }
         }
         CompiledAction::Filter { tags } => {
             if !tags.is_empty() {
-                token.tags.retain(|t| tags.iter().any(|m| m.matches(t)));
+                let kept: Vec<String> = token
+                    .tags
+                    .iter()
+                    .filter(|t| tags.iter().any(|m| m.matches(t)))
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    token.tags = kept;
+                }
             }
         }
     }
@@ -1484,5 +1506,26 @@ mod tests {
         );
         let diags = matcher.grammar_diagnostics("run", &analyze("run", &[("run", &["NN"], &[])]));
         assert_eq!(diags, [], "expected no diagnostics, got {diags:?}");
+    }
+
+    #[test]
+    fn remove_and_filter_never_empty_a_token() {
+        let mut t = Token {
+            text: "casa".into(),
+            tags: vec!["NCFS000".into()],
+            ..Default::default()
+        };
+        let m = |p: &str| TagMatch::Literal(p.to_owned());
+        apply_action(&CompiledAction::Remove { tags: vec![m("NCFS000")], lemmas: vec![] }, &mut t);
+        assert_eq!(t.tags, vec!["NCFS000".to_owned()]);
+        apply_action(&CompiledAction::Filter { tags: vec![m("VMIP3S0")] }, &mut t);
+        assert_eq!(t.tags, vec!["NCFS000".to_owned()]);
+    }
+
+    #[test]
+    fn unicode_case_classes_stay_case_sensitive() {
+        let re = anchored("\\p{Lu}.*", true).unwrap();
+        assert!(re.is_match("Madrid"));
+        assert!(!re.is_match("madrid"));
     }
 }
