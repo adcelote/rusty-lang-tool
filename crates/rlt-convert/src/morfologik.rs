@@ -127,6 +127,66 @@ pub fn read_triples(dict: &[u8], meta: &DictMeta) -> Result<Vec<(String, String,
     Ok(out)
 }
 
+/// Read a morfologik *speller* dictionary (`de_DE.dict` and friends) into `(word, frequency)` pairs.
+///
+/// Speller dictionaries list plain words; with `fsa.dict.frequency-included` each entry carries one
+/// trailing printable byte after the separator, `'A'` (rarest) to `'Z'` (most frequent), which
+/// LanguageTool uses to order suggestions. Entries without that byte get frequency 0.
+///
+/// # Errors
+/// Returns an error if the bytes are not a supported morfologik automaton.
+pub fn read_speller_words(dict: &[u8], meta: &DictMeta) -> Result<Vec<(String, u8)>> {
+    ensure!(
+        dict.len() > 8 && &dict[..4] == b"\\fsa",
+        "not a morfologik FSA (bad magic)"
+    );
+    let mut out = Vec::new();
+    let mut emit_entry = |entry: &[u8]| {
+        let (word, freq) = match entry.iter().rposition(|&b| b == meta.separator) {
+            Some(i) if meta.frequency_included && i + 2 == entry.len() => {
+                (&entry[..i], entry[i + 1].saturating_sub(b'A'))
+            }
+            Some(i) => (&entry[..i], 0),
+            None => (entry, 0),
+        };
+        if let Some(w) = decode_field(word, meta) {
+            out.push((w, freq));
+        }
+    };
+    let mut seq = Vec::new();
+    match dict[4] {
+        0xc6 => {
+            let fsa = Cfsa2::parse(dict)?;
+            visit(&fsa, fsa.root(), &mut seq, &mut emit_entry);
+        }
+        0x05 => {
+            let fsa = Fsa5::parse(dict)?;
+            visit(&fsa, fsa.root(), &mut seq, &mut emit_entry);
+        }
+        v => bail!("unsupported FSA version {v:#x} (expected CFSA2 0xc6 or FSA5 0x05)"),
+    }
+    Ok(out)
+}
+
+/// Build the runtime spell dictionary (`speller.fst`: word -> frequency) from a morfologik speller
+/// `.dict` and its `.info`. Returns the number of distinct words.
+///
+/// # Errors
+/// Returns an error if the files are unreadable or not a supported automaton.
+pub fn build_speller_fst(dict: &std::path::Path, info: &std::path::Path, out: &std::path::Path) -> Result<usize> {
+    let meta = parse_info(&std::fs::read_to_string(info)?)?;
+    let mut words = read_speller_words(&std::fs::read(dict)?, &meta)?;
+    // fst needs strictly ascending byte-order keys; keep the highest frequency of any duplicate.
+    words.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()).then(b.1.cmp(&a.1)));
+    words.dedup_by(|b, a| a.0 == b.0);
+    let mut builder = fst::MapBuilder::new(std::io::BufWriter::new(std::fs::File::create(out)?))?;
+    for (w, f) in &words {
+        builder.insert(w.as_bytes(), u64::from(*f))?;
+    }
+    builder.finish()?;
+    Ok(words.len())
+}
+
 /// Walk an automaton, decoding each accepted byte sequence into a triple.
 fn collect_triples(fsa: &impl Fsa, meta: &DictMeta, out: &mut Vec<(String, String, String)>) {
     let mut seq = Vec::new();
@@ -972,4 +1032,5 @@ mod tests {
             "actionable error: {err}"
         );
     }
+
 }

@@ -22,7 +22,9 @@ mod morfologik;
 pub use disambig::{
     DEFAULT_DISAMBIGUATION, DisambigReport, convert_disambiguation, lower_disambiguation,
 };
-pub use morfologik::{DictMeta, Encoder, parse_info, read_triples};
+pub use morfologik::{
+    DictMeta, Encoder, build_speller_fst, parse_info, read_speller_words, read_triples,
+};
 
 use std::path::Path;
 

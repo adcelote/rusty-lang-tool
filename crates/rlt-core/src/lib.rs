@@ -181,6 +181,12 @@ pub trait Engine {
     /// spelling membership oracle and the validity filter for correction candidates. The future
     /// custom engine answers it from its own FSA dictionary.
     fn is_known(&self, word: &str) -> bool;
+
+    /// How common `word` is on a 0 (unknown or rare) to about 25 (very common) scale, used to rank
+    /// spelling suggestions. Engines without frequency data report 0 for everything.
+    fn word_frequency(&self, _word: &str) -> u8 {
+        0
+    }
 }
 
 /// L2 — rule-based grammar/style checking seam.
@@ -206,6 +212,8 @@ pub struct Checker<B: Engine + GrammarChecker> {
     /// The L1 spelling-diagnostic message, in the checked language (LanguageTool's localized
     /// `spelling` string). Defaults to English; the CLI/wasm pass the language's variant.
     spell_message: &'static str,
+    /// Sound-alike confusion pairs for suggestion candidates ([`rlt_lang::SpellConfig::replacement_pairs`]).
+    replacement_pairs: &'static [(&'static str, &'static str)],
 }
 
 /// English default for the L1 spelling message when no language-specific one is supplied (the nlprule
@@ -220,6 +228,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             backend,
             alphabet: spell::ASCII_ALPHABET,
             spell_message: DEFAULT_SPELL_MESSAGE,
+            replacement_pairs: &[],
         }
     }
 
@@ -230,7 +239,18 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             backend,
             alphabet,
             spell_message,
+            replacement_pairs: &[],
         }
+    }
+
+    /// Add the language's sound-alike confusion pairs to the spelling suggestions.
+    #[must_use]
+    pub fn with_replacement_pairs(
+        mut self,
+        pairs: &'static [(&'static str, &'static str)],
+    ) -> Self {
+        self.replacement_pairs = pairs;
+        self
     }
 
     /// Run the full cascade (L1 spelling + L2 grammar) over `text` and return all diagnostics,
@@ -238,11 +258,12 @@ impl<B: Engine + GrammarChecker> Checker<B> {
     #[must_use]
     pub fn check(&self, text: &str) -> Vec<Diagnostic> {
         let analysis = self.backend.analyze(text);
-        let mut diagnostics = spell::spelling_diagnostics(
+        let mut diagnostics = spell::spelling_diagnostics_with(
             &self.backend,
             &analysis,
             self.alphabet,
             self.spell_message,
+            self.replacement_pairs,
         );
         diagnostics.extend(self.backend.grammar_diagnostics(text, &analysis));
         strip_noop_suggestions(text, &mut diagnostics);
@@ -363,6 +384,9 @@ impl<E: Engine, G: GrammarChecker> Engine for Composite<E, G> {
     fn is_known(&self, word: &str) -> bool {
         self.engine.is_known(word)
     }
+    fn word_frequency(&self, word: &str) -> u8 {
+        self.engine.word_frequency(word)
+    }
 }
 
 impl<E: Engine, G: GrammarChecker> GrammarChecker for Composite<E, G> {
@@ -406,6 +430,9 @@ impl<B: Engine + GrammarChecker, G: GrammarChecker> Engine for WithGrammar<B, G>
     }
     fn is_known(&self, word: &str) -> bool {
         self.inner.is_known(word)
+    }
+    fn word_frequency(&self, word: &str) -> u8 {
+        self.inner.word_frequency(word)
     }
 }
 

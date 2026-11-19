@@ -26,6 +26,12 @@ fn is_combining_mark(c: char) -> bool {
 pub const ASCII_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
 /// Minimum token length (in characters) to spell-check (skips 1–2 char fragments and abbreviations).
 const MIN_LEN: usize = 3;
+/// How much one step of word frequency (0..25) lowers a suggestion's cost: a common word is a likelier
+/// intended spelling than a rare one at the same edit distance.
+const FREQ_WEIGHT: f32 = 0.08;
+/// Cost of a sound-alike substitution from the language's confusion pairs (cheaper than a random
+/// single-letter replacement, since the writer likely heard rather than mistyped it).
+const PAIR_COST: f32 = 0.8;
 /// Cap on suggestions offered per misspelling.
 const MAX_SUGGESTIONS: usize = 5;
 
@@ -39,6 +45,17 @@ pub(crate) fn spelling_diagnostics<E: Engine>(
     alphabet: &str,
     message: &str,
 ) -> Vec<Diagnostic> {
+    spelling_diagnostics_with(engine, analysis, alphabet, message, &[])
+}
+
+/// [`spelling_diagnostics`] plus the language's sound-alike confusion `pairs` as extra candidates.
+pub(crate) fn spelling_diagnostics_with<E: Engine>(
+    engine: &E,
+    analysis: &Analysis,
+    alphabet: &str,
+    message: &str,
+    pairs: &[(&str, &str)],
+) -> Vec<Diagnostic> {
     let alphabet: Vec<char> = alphabet.chars().collect();
     let mut diagnostics = Vec::new();
     for token in &analysis.tokens {
@@ -49,7 +66,7 @@ pub(crate) fn spelling_diagnostics<E: Engine>(
             span: token.span,
             code: "SPELL".to_owned(),
             message: message.to_owned(),
-            suggestions: suggestions(engine, &token.text, &alphabet),
+            suggestions: suggestions(engine, &token.text, &alphabet, pairs),
             source: Source::Spelling,
             details: None,
         });
@@ -89,7 +106,12 @@ pub fn fuzz_edits1(word: &str, alphabet: &str) -> usize {
 /// Candidates are tried as generated (lower case) and with a capitalised first letter, because
 /// lexicons like German's list nouns only in capitalised form: a lower-case-only lookup could never
 /// suggest "Hypothese" for "Hypotese" or "Messung" for "messung".
-fn suggestions<E: Engine>(engine: &E, word: &str, alphabet: &[char]) -> Vec<Suggestion> {
+fn suggestions<E: Engine>(
+    engine: &E,
+    word: &str,
+    alphabet: &[char],
+    pairs: &[(&str, &str)],
+) -> Vec<Suggestion> {
     // Strip combining marks before generating edits so candidates are base-letter forms the lexicon
     // knows (the engine's `is_known` normalizes the same way). No-op for mark-free en/de/ru words.
     let lower: String = word
@@ -104,11 +126,15 @@ fn suggestions<E: Engine>(engine: &E, word: &str, alphabet: &[char]) -> Vec<Sugg
     if recased != word && engine.is_known(&recased) {
         best.insert(recased, 0.2);
     }
-    for (cand, cost) in scored_edits1(&lower, alphabet) {
+    let mut scored = scored_edits1(&lower, alphabet);
+    scored.extend(pair_candidates(word, &lower, pairs));
+    for (cand, cost) in scored {
         let plain = engine.is_known(&cand).then(|| (recase(word, &cand), cost));
         let caps = capitalize_first(&cand);
-        let capped = (plain.is_none() && caps != cand && engine.is_known(&caps))
-            .then(|| (caps, cost + if typed_upper { 0.0 } else { 0.3 }));
+        let capped = (plain.is_none() && caps != cand && engine.is_known(&caps)).then(|| {
+            let c = cost - FREQ_WEIGHT * f32::from(engine.word_frequency(&caps));
+            (caps, c + if typed_upper { 0.0 } else { 0.3 })
+        });
         for (form, c) in plain.into_iter().chain(capped) {
             best.entry(form)
                 .and_modify(|old| *old = old.min(c))
@@ -131,6 +157,21 @@ fn suggestions<E: Engine>(engine: &E, word: &str, alphabet: &[char]) -> Vec<Sugg
         .take(MAX_SUGGESTIONS)
         .map(|(replacement, _)| Suggestion { replacement })
         .collect()
+}
+
+/// Candidates from the language's `(typed, intended)` sound-alike pairs: each occurrence of `typed`
+/// in the word is replaced by `intended`. Case is folded afterwards by the caller.
+fn pair_candidates(word: &str, lower: &str, pairs: &[(&str, &str)]) -> Vec<(String, f32)> {
+    let mut out = Vec::new();
+    for &(typed, intended) in pairs {
+        for src in [word, lower] {
+            for (i, _) in src.match_indices(typed) {
+                let cand = format!("{}{}{}", &src[..i], intended, &src[i + typed.len()..]);
+                out.push((cand.to_lowercase(), PAIR_COST));
+            }
+        }
+    }
+    out
 }
 
 /// Edit-distance-1 candidates with a plausibility cost (lower = more likely a real typo): swapped
@@ -452,7 +493,7 @@ mod tests {
 
     fn top(engine: &impl Engine, word: &str) -> Vec<String> {
         let alphabet: Vec<char> = ASCII_ALPHABET.chars().collect();
-        suggestions(engine, word, &alphabet)
+        suggestions(engine, word, &alphabet, &[])
             .into_iter()
             .map(|s| s.replacement)
             .collect()

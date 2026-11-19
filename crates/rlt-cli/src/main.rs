@@ -83,6 +83,19 @@ enum Command {
         #[arg(long, default_value = rlt_convert::DEFAULT_CONFUSION_OUT)]
         out: PathBuf,
     },
+    /// Build `speller.fst` (word -> frequency) from a LanguageTool morfologik speller dictionary
+    /// (e.g. `de_DE.dict` + `de_DE.info`; GPL data, ship it as a separate package).
+    BuildSpeller {
+        /// The `.dict` file.
+        #[arg(long)]
+        dict: PathBuf,
+        /// The matching `.info` file.
+        #[arg(long)]
+        info: PathBuf,
+        /// Output `speller.fst`.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Tokenize + POS-tag a sentence and print the engine's analysis (engine smoke test).
     Tokens {
         /// The sentence to analyze.
@@ -176,6 +189,11 @@ fn main() -> Result<()> {
                 bigrams = report.bigrams,
                 "confusion model built"
             );
+            Ok(())
+        }
+        Command::BuildSpeller { dict, info, out } => {
+            let n = rlt_convert::build_speller_fst(&dict, &info, &out)?;
+            tracing::info!(words = n, out = %out.display(), "speller built");
             Ok(())
         }
         Command::Tokens { text, lang } => run_tokens(&text, resolve_lang(&lang)?),

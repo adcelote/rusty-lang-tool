@@ -55,6 +55,11 @@ pub struct NativeEngine {
     normalization: Normalization,
     /// Elision clitics that split off a leading apostrophe-word (French/Italian); empty otherwise.
     elision: &'static [&'static str],
+    /// Optional speller dictionary (word -> frequency, from LanguageTool's morfologik speller). Words
+    /// in it are known, and its frequency ranks suggestions.
+    speller: Option<fst::Map<Vec<u8>>>,
+    /// Whether an out-of-lexicon word may still count as known if it splits into known parts.
+    compound_fallback: bool,
 }
 
 impl NativeEngine {
@@ -71,7 +76,29 @@ impl NativeEngine {
             compounds: None,
             normalization: Normalization::None,
             elision: &[],
+            speller: None,
+            compound_fallback: true,
         }
+    }
+
+    /// Attach a speller dictionary (`speller.fst`, see `rlt build-speller`).
+    ///
+    /// # Errors
+    /// Returns an error if `bytes` is not a valid FST map.
+    pub fn with_speller(mut self, bytes: Vec<u8>) -> Result<Self, NativeError> {
+        self.speller = Some(
+            fst::Map::new(bytes).map_err(|e| NativeError::Disambig(format!("speller.fst: {e}")))?,
+        );
+        // A full speller dictionary replaces the heuristic compound split.
+        self.compound_fallback = false;
+        Ok(self)
+    }
+
+    /// Whether compound splitting may declare unknown words known (default true).
+    #[must_use]
+    pub fn with_compound_fallback(mut self, on: bool) -> Self {
+        self.compound_fallback = on;
+        self
     }
 
     /// Use a specific language's structural tagset.
@@ -120,6 +147,8 @@ impl NativeEngine {
             compounds: cfg.compounds.as_ref(),
             normalization: cfg.normalization,
             elision: cfg.elision,
+            speller: None,
+            compound_fallback: true,
         })
     }
 
@@ -211,9 +240,18 @@ impl Engine for NativeEngine {
     fn is_known(&self, word: &str) -> bool {
         let key = self.lookup_key(word);
         self.tagger.is_known(&key)
-            || self
-                .compounds
-                .is_some_and(|rules| compound::is_compound(&key, &self.tagger, rules))
+            || self.speller.as_ref().is_some_and(|m| m.contains_key(key.as_bytes()))
+            || (self.compound_fallback
+                && self
+                    .compounds
+                    .is_some_and(|rules| compound::is_compound(&key, &self.tagger, rules)))
+    }
+
+    fn word_frequency(&self, word: &str) -> u8 {
+        self.speller
+            .as_ref()
+            .and_then(|m| m.get(word.as_bytes()))
+            .map_or(0, |f| u8::try_from(f).unwrap_or(u8::MAX))
     }
 }
 
@@ -599,5 +637,18 @@ mod tests {
             ]
         );
         assert!(engine.is_known("The") && !engine.is_known("zzz"));
+    }
+}
+
+#[cfg(test)]
+mod speller_tests {
+    #[test]
+    fn speller_fst_roundtrip_frequency() {
+        let mut b = fst::MapBuilder::memory();
+        b.insert("haus", 7).unwrap();
+        b.insert("hund", 3).unwrap();
+        let m = fst::Map::new(b.into_inner().unwrap()).unwrap();
+        assert_eq!(m.get("haus"), Some(7));
+        assert_eq!(m.get("maus"), None);
     }
 }
