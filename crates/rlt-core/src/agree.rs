@@ -756,3 +756,234 @@ mod es_tests {
         assert_eq!(spanish_agreement(&a)[0].code, "ES_SUBJECT_VERB_RLT");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// English (Penn tagset): a/an and subject–verb agreement. LanguageTool does these in Java.
+// ---------------------------------------------------------------------------------------------
+
+/// Words whose first letter is a vowel but that start with a consonant sound ("a university").
+const EN_CONSONANT_SOUND: &[&str] = &[
+    "univers", "uniq", "unit", "union", "unif", "unic", "unilat", "unisex", "unipol", "unix", "use", "usu", "usa",
+    "uti", "util", "eu", "one", "once", "ubiq", "ura", "uro", "ufo", "u-", "ewe", "euro",
+];
+/// Words starting with a silent h ("an hour").
+const EN_SILENT_H: &[&str] = &["hour", "honest", "honor", "honour", "heir"];
+
+fn en_starts_with_vowel_sound(word: &str) -> Option<bool> {
+    let first = word.chars().next()?;
+    if !first.is_alphabetic() {
+        return None;
+    }
+    // Acronyms ("an MRI") and emphasis in capitals ("a LOT") cannot be told apart here: stay silent.
+    let letters = word.chars().take_while(|c| c.is_alphabetic()).count();
+    if letters < 2 || word.chars().take_while(|c| c.is_alphabetic()).all(char::is_uppercase) {
+        return None;
+    }
+    let w = word.to_lowercase();
+    if EN_SILENT_H.iter().any(|h| w.starts_with(h)) {
+        return Some(true);
+    }
+    if EN_CONSONANT_SOUND.iter().any(|p| w.starts_with(p)) {
+        return Some(false);
+    }
+    Some(matches!(w.chars().next()?, 'a' | 'e' | 'i' | 'o' | 'u'))
+}
+
+fn en_has(t: &Token, tag: &str) -> bool {
+    t.tags.iter().any(|g| g == tag)
+}
+
+fn en_only_verbal_plural(t: &Token) -> bool {
+    // Readings that are only base/non-3rd-person present forms ("go", "have").
+    t.tags.iter().any(|g| g == "VBP" || g == "VB")
+        && !t.tags.iter().any(|g| matches!(g.as_str(), "VBZ" | "VBD" | "MD" | "NNS" | "VBN"))
+}
+
+/// All English findings: a/an everywhere, subject–verb at sentence start.
+pub(crate) fn english_agreement(analysis: &Analysis) -> Vec<Diagnostic> {
+    let toks = &analysis.tokens;
+    let mut out = Vec::new();
+    for i in 0..toks.len().saturating_sub(1) {
+        let a = toks[i].text.as_str();
+        if !(a.eq_ignore_ascii_case("a") || a.eq_ignore_ascii_case("an")) {
+            continue;
+        }
+        // An article directly before a word (not a variable "a" in math or a list item).
+        let next = &toks[i + 1];
+        if next.span.start != toks[i].span.end + 1 {
+            continue;
+        }
+        // The article must be a plain determiner (not a variable "a", grade "A", "Series A"), spelled
+        // in lower case or opening the sentence, before a noun/adjective.
+        let art = &toks[i];
+        let sentence_start = i > 0 && en_has(&toks[i - 1], "SENT_START");
+        let plain_det = art.tags.iter().any(|g| g == "DT") && !art.tags.iter().any(|g| g.starts_with("NN") || g == "FW");
+        let before_noun = next.tags.iter().any(|g| matches!(g.as_str(), "NN" | "NN:UN" | "NNS" | "JJ" | "JJR" | "JJS" | "NNP"))
+            && !next.tags.iter().any(|g| matches!(g.as_str(), "CC" | "IN" | "VBP" | "VBZ" | "MD" | "VBD" | "RB"));
+        if !plain_det || !before_noun || (art.text.starts_with(char::is_uppercase) && !sentence_start) {
+            continue;
+        }
+        if toks.get(i + 2).is_some_and(|t| t.text.starts_with('-') && t.span.start == next.span.end) {
+            continue;
+        }
+        let Some(vowel) = en_starts_with_vowel_sound(&next.text) else {
+            continue;
+        };
+        let want = if vowel { "an" } else { "a" };
+        if a.eq_ignore_ascii_case(want) {
+            continue;
+        }
+        out.push(Diagnostic {
+            span: toks[i].span,
+            code: "EN_A_VS_AN_RLT".into(),
+            message: format!("Use \"{want}\" before a word that starts with a {} sound.", if vowel { "vowel" } else { "consonant" }),
+            suggestions: vec![Suggestion { replacement: capitalise(want, a) }],
+            source: Source::Grammar,
+            details: None,
+        });
+    }
+    for i in (0..toks.len()).filter(|&i| en_has(&toks[i], "SENT_START")) {
+        let end = (i + 1..toks.len()).find(|&k| en_has(&toks[k], "SENT_START")).unwrap_or(toks.len());
+        if let Some(d) = en_subject_verb(&toks[i..end]) {
+            out.push(d);
+        }
+    }
+    out
+}
+
+fn en_subject_verb(toks: &[Token]) -> Option<Diagnostic> {
+    let first = 1.min(toks.len().checked_sub(1)?);
+    let s = toks.get(first)?;
+    let sl = s.text.to_lowercase();
+    let v = toks.get(first + 1)?;
+    let vl = v.text.to_lowercase();
+    if is_cap(v) {
+        return None;
+    }
+    let singular = matches!(sl.as_str(), "he" | "she" | "it");
+    let plural = matches!(sl.as_str(), "we" | "they" | "you");
+    let bad = if singular {
+        matches!(vl.as_str(), "are" | "were" | "have" | "do" | "don't" | "am")
+            || (en_only_verbal_plural(v)
+                && v.tags.iter().all(|g| matches!(g.as_str(), "VB" | "VBP" | "NN" | "NN:UN"))
+                && !matches!(vl.as_str(), "be" | "have" | "do")
+                && !toks.get(first + 2).is_some_and(|n| {
+                    n.text.starts_with('-') || n.tags.iter().any(|g| matches!(g.as_str(), "VBD" | "VBN" | "VBG"))
+                }))
+    } else if plural {
+        matches!(vl.as_str(), "is" | "was" | "has" | "does" | "doesn't" | "am")
+            || (en_has(v, "VBZ") && !v.tags.iter().any(|g| matches!(g.as_str(), "VBP" | "VB" | "NN" | "NNS" | "VBD" | "MD")))
+    } else if sl == "i" {
+        matches!(vl.as_str(), "is" | "has" | "does" | "doesn't" | "are")
+    } else {
+        // Plural noun phrase "These results" + singular be/have, or "The results of the study is".
+        let (np_start, noun_idx) = en_np(toks, first)?;
+        let _ = np_start;
+        let noun = &toks[noun_idx];
+        let mut verb_idx = noun_idx + 1;
+        let nl = noun.text.to_lowercase();
+        let singular_s = nl.ends_with("ics") || nl.ends_with("works") || nl.ends_with("ss")
+            || matches!(nl.as_str(), "news" | "series" | "species" | "means" | "headquarters" | "barracks" | "crossroads");
+        let plural_noun = noun.tags.iter().any(|g| g == "NNS") && !noun.tags.iter().any(|g| g == "NN" || g == "NN:UN") && !singular_s;
+        // "The results of the study is clear": skip the "of …" modifier.
+        if plural_noun && toks.get(verb_idx).is_some_and(|t| t.text.eq_ignore_ascii_case("of")) {
+            let mut k = verb_idx + 1;
+            while k < toks.len() && !en_has(&toks[k], "VBZ") && !en_has(&toks[k], "VBD") && k < verb_idx + 5 {
+                if toks[k].text.eq_ignore_ascii_case("is") || toks[k].text.eq_ignore_ascii_case("was") {
+                    break;
+                }
+                k += 1;
+            }
+            verb_idx = k;
+        }
+        let v2 = toks.get(verb_idx)?;
+        let v2l = v2.text.to_lowercase();
+        let ok_plural = plural_noun && matches!(v2l.as_str(), "is" | "was" | "has" | "does" | "doesn't");
+        return ok_plural.then(|| Diagnostic {
+            span: v2.span,
+            code: "EN_SUBJECT_VERB_RLT".into(),
+            message: "The subject is plural but the verb is singular.".into(),
+            suggestions: match v2l.as_str() {
+                "is" => vec!["are"],
+                "was" => vec!["were"],
+                "has" => vec!["have"],
+                "does" => vec!["do"],
+                _ => vec!["don't"],
+            }
+            .into_iter()
+            .map(|r| Suggestion { replacement: capitalise(r, &v2.text) })
+            .collect(),
+            source: Source::Grammar,
+            details: None,
+        });
+    };
+    bad.then(|| Diagnostic {
+        span: Span { start: s.span.start, end: v.span.end },
+        code: "EN_SUBJECT_VERB_RLT".into(),
+        message: "The subject and the verb do not agree in number or person.".into(),
+        suggestions: Vec::new(),
+        source: Source::Grammar,
+        details: None,
+    })
+}
+
+/// Determiner (these/those/the/…) + adjectives + noun at `i`: (start, noun index).
+fn en_np(toks: &[Token], i: usize) -> Option<(usize, usize)> {
+    let d = toks.get(i)?;
+    if !matches!(
+        d.text.to_lowercase().as_str(),
+        "the" | "these" | "those" | "many" | "several" | "both"
+    ) {
+        return None;
+    }
+    let mut j = i + 1;
+    while toks.get(j).is_some_and(|t| en_has(t, "JJ") && !en_has(t, "NNS") && !en_has(t, "NN")) {
+        j += 1;
+    }
+    let n = toks.get(j)?;
+    (n.tags.iter().any(|g| g.starts_with("NN")) && !is_cap(n)).then_some((i, j))
+}
+
+#[cfg(test)]
+mod en_tests {
+    use super::*;
+
+    fn tok(text: &str, start: usize, tags: &[&str]) -> Token {
+        Token {
+            text: text.into(),
+            span: Span { start, end: start + text.len() },
+            tags: tags.iter().map(|s| (*s).to_owned()).collect(),
+            lemmas: Vec::new(),
+        }
+    }
+
+    fn analysis(words: &[(&str, &[&str])]) -> Analysis {
+        let mut pos = 0;
+        let mut tokens = vec![tok("", 0, &["SENT_START"])];
+        for (w, t) in words {
+            tokens.push(tok(w, pos, t));
+            pos += w.len() + 1;
+        }
+        Analysis { tokens }
+    }
+
+    #[test]
+    fn a_an_before_vowel_and_consonant_sounds() {
+        let bad = analysis(&[("a", &["DT"]), ("apple", &["NN"])]);
+        assert_eq!(english_agreement(&bad)[0].suggestions[0].replacement, "an");
+        let uni = analysis(&[("an", &["DT"]), ("university", &["NN"])]);
+        assert_eq!(english_agreement(&uni)[0].suggestions[0].replacement, "a");
+        let ok = analysis(&[("an", &["DT"]), ("hour", &["NN"])]);
+        assert!(english_agreement(&ok).is_empty());
+        let var = analysis(&[("a", &["NN"]), ("and", &["CC"])]);
+        assert!(english_agreement(&var).is_empty());
+    }
+
+    #[test]
+    fn flags_pronoun_verb_mismatch() {
+        let a = analysis(&[("He", &["PRP"]), ("go", &["NN", "VB", "VBP"])]);
+        assert_eq!(english_agreement(&a)[0].code, "EN_SUBJECT_VERB_RLT");
+        let ok = analysis(&[("He", &["PRP"]), ("goes", &["VBZ"])]);
+        assert!(english_agreement(&ok).is_empty());
+    }
+}

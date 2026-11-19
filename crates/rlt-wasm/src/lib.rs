@@ -234,6 +234,7 @@ fn spell_checker<B: Engine + GrammarChecker>(backend: B, spell: &rlt_lang::Spell
         .with_replacement_pairs(spell.replacement_pairs)
         .with_german_agreement(spell.german_agreement)
         .with_spanish_agreement(spell.spanish_agreement)
+        .with_english_agreement(spell.english_agreement)
 }
 
 /// Build the native engine from in-memory artifacts (disambiguation skipped if `disambig` is empty).

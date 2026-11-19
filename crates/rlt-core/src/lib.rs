@@ -219,6 +219,8 @@ pub struct Checker<B: Engine + GrammarChecker> {
     german_agreement: bool,
     /// Run the native Spanish agreement checks.
     spanish_agreement: bool,
+    /// Run the native English a/an and subject–verb checks.
+    english_agreement: bool,
 }
 
 /// English default for the L1 spelling message when no language-specific one is supplied (the nlprule
@@ -236,6 +238,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             replacement_pairs: &[],
             german_agreement: false,
             spanish_agreement: false,
+            english_agreement: false,
         }
     }
 
@@ -249,6 +252,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             replacement_pairs: &[],
             german_agreement: false,
             spanish_agreement: false,
+            english_agreement: false,
         }
     }
 
@@ -263,6 +267,13 @@ impl<B: Engine + GrammarChecker> Checker<B> {
     #[must_use]
     pub fn with_spanish_agreement(mut self, on: bool) -> Self {
         self.spanish_agreement = on;
+        self
+    }
+
+    /// Enable the native English checks (a/an, subject–verb).
+    #[must_use]
+    pub fn with_english_agreement(mut self, on: bool) -> Self {
+        self.english_agreement = on;
         self
     }
 
@@ -294,6 +305,9 @@ impl<B: Engine + GrammarChecker> Checker<B> {
         }
         if self.spanish_agreement {
             diagnostics.extend(agree::spanish_agreement(&analysis));
+        }
+        if self.english_agreement {
+            diagnostics.extend(agree::english_agreement(&analysis));
         }
         strip_noop_suggestions(text, &mut diagnostics);
         absorb_leading_space(text, &mut diagnostics);
