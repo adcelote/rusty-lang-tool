@@ -122,6 +122,8 @@ pub struct SpellConfig {
     pub spanish_agreement: bool,
     /// Run the native English a/an and subject–verb checks (`rlt-core::agree`).
     pub english_agreement: bool,
+    /// Message for the replacement word list (`{}` = the wrong form); empty when the language has none.
+    pub wordlist_message: &'static str,
 }
 
 /// The structural tags a language's grammar anchors on, assigned by the engine from token shape.
@@ -286,6 +288,11 @@ impl LangConfig {
     pub fn speller_path(&self) -> String {
         format!("resources/{}/speller.fst", self.code)
     }
+    /// The optional replacement word list (`resources/<lang>/wordlist.txt`, LanguageTool `replace.txt` format, LGPL data).
+    #[must_use]
+    pub fn wordlist_path(&self) -> String {
+        format!("resources/{}/wordlist.txt", self.code)
+    }
     /// The disambiguation tag-action artifact.
     #[must_use]
     pub fn disambig_path(&self) -> String {
@@ -433,6 +440,7 @@ pub static EN: LangConfig = LangConfig {
         german_agreement: false,
         spanish_agreement: false,
         english_agreement: true,
+        wordlist_message: "",
     },
     normalization: Normalization::None,
     elision: &[],
@@ -587,6 +595,7 @@ pub static DE: LangConfig = LangConfig {
         german_agreement: true,
         spanish_agreement: false,
         english_agreement: false,
+        wordlist_message: "",
     },
     normalization: Normalization::None,
     elision: &[],
@@ -636,6 +645,7 @@ pub static RU: LangConfig = LangConfig {
         german_agreement: false,
         spanish_agreement: false,
         english_agreement: false,
+        wordlist_message: "",
     },
     normalization: Normalization::None,
     elision: &[],
@@ -684,6 +694,7 @@ pub static AR: LangConfig = LangConfig {
         german_agreement: false,
         spanish_agreement: false,
         english_agreement: false,
+        wordlist_message: "",
     },
     normalization: Normalization::StripCombiningMarks,
     elision: &[],
@@ -728,6 +739,7 @@ pub static FR: LangConfig = LangConfig {
         german_agreement: false,
         spanish_agreement: false,
         english_agreement: false,
+        wordlist_message: "",
     },
     normalization: Normalization::None,
     // French elision clitics (the apostrophe-final dict keys): articles/pronouns/conjunctions that
@@ -779,6 +791,7 @@ pub static ES: LangConfig = LangConfig {
         german_agreement: false,
         spanish_agreement: true,
         english_agreement: false,
+        wordlist_message: "«{}» es un error frecuente; ¿quiso decir otra forma?",
     },
     normalization: Normalization::None,
     elision: &[],
@@ -821,6 +834,7 @@ pub static IT: LangConfig = LangConfig {
         german_agreement: false,
         spanish_agreement: false,
         english_agreement: false,
+        wordlist_message: "",
     },
     normalization: Normalization::None,
     // Italian elision clitics: articles, articulated prepositions, and a few pronouns/adjectives that

@@ -19,6 +19,8 @@ mod disambig;
 mod matcher;
 mod agree;
 mod spell;
+mod wordlist;
+pub use wordlist::Wordlist;
 #[doc(hidden)]
 pub use spell::fuzz_edits1;
 
@@ -221,6 +223,8 @@ pub struct Checker<B: Engine + GrammarChecker> {
     spanish_agreement: bool,
     /// Run the native English a/an and subject–verb checks.
     english_agreement: bool,
+    /// Optional replacement word list and its message (`{}` = the wrong form).
+    wordlist: Option<(Wordlist, &'static str)>,
 }
 
 /// English default for the L1 spelling message when no language-specific one is supplied (the nlprule
@@ -239,6 +243,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             german_agreement: false,
             spanish_agreement: false,
             english_agreement: false,
+            wordlist: None,
         }
     }
 
@@ -253,6 +258,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             german_agreement: false,
             spanish_agreement: false,
             english_agreement: false,
+            wordlist: None,
         }
     }
 
@@ -274,6 +280,13 @@ impl<B: Engine + GrammarChecker> Checker<B> {
     #[must_use]
     pub fn with_english_agreement(mut self, on: bool) -> Self {
         self.english_agreement = on;
+        self
+    }
+
+    /// Add a replacement word list (LanguageTool `replace.txt` format); `message` contains `{}` for the wrong form.
+    #[must_use]
+    pub fn with_wordlist(mut self, list: Wordlist, message: &'static str) -> Self {
+        self.wordlist = Some((list, message));
         self
     }
 
@@ -308,6 +321,9 @@ impl<B: Engine + GrammarChecker> Checker<B> {
         }
         if self.english_agreement {
             diagnostics.extend(agree::english_agreement(&analysis));
+        }
+        if let Some((list, message)) = &self.wordlist {
+            diagnostics.extend(list.diagnostics(&analysis, message));
         }
         strip_noop_suggestions(text, &mut diagnostics);
         absorb_leading_space(text, &mut diagnostics);
