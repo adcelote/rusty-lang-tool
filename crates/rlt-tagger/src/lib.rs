@@ -393,6 +393,7 @@ fn push_edit(
         message: "Possible grammatical error.".to_owned(),
         suggestions: vec![Suggestion { replacement }],
         source: Source::Neural,
+        details: None,
     });
 }
 

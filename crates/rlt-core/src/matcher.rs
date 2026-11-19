@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use regex::Regex;
 use rlt_ir::{
-    Case, Construct, DisambigRule, ExceptionPat, ExceptionScope, Rule, SugPart,
+    Case, Construct, DisambigRule, ExceptionPat, ExceptionScope, Rule, RuleDetails, SugPart,
     Suggestion as IrSuggestion, TagAction, TokenPat,
 };
 
@@ -133,6 +133,7 @@ impl GrammarChecker for IrMatcher {
 struct CompiledRule {
     id: String,
     message: String,
+    details: Option<RuleDetails>,
     elements: Vec<Elem>,
     marker: Option<(usize, usize)>,
     suggestions: Vec<CompiledSuggestion>,
@@ -256,6 +257,7 @@ fn compile_rule(r: &Rule) -> Option<CompiledRule> {
     Some(CompiledRule {
         id: r.id.clone(),
         message: r.message.clone(),
+        details: details_of(r),
         elements,
         marker,
         suggestions,
@@ -303,6 +305,7 @@ fn compile_suggestion(s: &IrSuggestion) -> Option<CompiledSuggestion> {
 struct CompiledRegexpRule {
     id: String,
     message: String,
+    details: Option<RuleDetails>,
     regex: Regex,
     mark: Option<usize>,
     suggestions: Vec<CompiledSuggestion>,
@@ -334,6 +337,7 @@ impl CompiledRegexpRule {
                 }),
                 suggestions,
                 source: Source::Grammar,
+                details: self.details.clone(),
             });
         }
     }
@@ -360,6 +364,7 @@ fn compile_regexp_rule(r: &Rule) -> Option<CompiledRegexpRule> {
     Some(CompiledRegexpRule {
         id: r.id.clone(),
         message: r.message.clone(),
+        details: details_of(r),
         regex,
         mark,
         suggestions,
@@ -733,7 +738,14 @@ fn render(
         }),
         suggestions,
         source: Source::Grammar,
+        details: rule.details.clone(),
     })
+}
+
+/// The rule's link/example, or `None` when it carries neither (keeps diagnostics small).
+fn details_of(r: &Rule) -> Option<RuleDetails> {
+    let d = &r.details;
+    (d.url.is_some() || d.example_wrong.is_some()).then(|| d.clone())
 }
 
 /// The source surface of the token(s) captured by the `no`-th (1-based) pattern element, or `None` if
@@ -1237,6 +1249,7 @@ mod tests {
                 Construct::MarkerEnd,
             ],
             antipatterns: vec![],
+            details: Default::default(),
             message: "Did you mean “should have”?".to_owned(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("should have".to_owned())],
@@ -1282,6 +1295,7 @@ mod tests {
                 }),
             ],
             antipatterns: vec![],
+            details: Default::default(),
             message: String::new(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Token {
@@ -1338,6 +1352,7 @@ mod tests {
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("x".to_owned())],
             }],
+            details: Default::default(),
         };
         let matcher = IrMatcher::new(&[rule]);
         let plain = analyze(
@@ -1375,6 +1390,7 @@ mod tests {
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("x".to_owned())],
             }],
+            details: Default::default(),
         };
         let matcher = IrMatcher::new(&[rule]);
         let hit = analyze("c b", &[("c", &[], &[]), ("b", &[], &[])]);
@@ -1397,6 +1413,7 @@ mod tests {
                 ..Default::default()
             })],
             antipatterns: vec![],
+            details: Default::default(),
             message: String::new(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("x".to_owned())],
@@ -1425,6 +1442,7 @@ mod tests {
             id: "LEAD".to_owned(),
             pattern: vec![lit("lead")],
             antipatterns: vec![vec![lit("lead"), lit("singer")]],
+            details: Default::default(),
             message: String::new(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("led".to_owned())],
@@ -1475,6 +1493,7 @@ mod tests {
                 Construct::MarkerEnd,
             ],
             antipatterns: vec![],
+            details: Default::default(),
             message: String::new(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("pet".to_owned())],
@@ -1512,6 +1531,7 @@ mod tests {
                 Construct::MarkerEnd,
             ],
             antipatterns: vec![],
+            details: Default::default(),
             message: String::new(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Token {
@@ -1539,6 +1559,7 @@ mod tests {
                 case_sensitive: false,
             }],
             antipatterns: vec![],
+            details: Default::default(),
             message: "Use the $ sign.".to_owned(),
             suggestions: vec![IrSuggestion {
                 parts: vec![
@@ -1576,6 +1597,7 @@ mod tests {
                 },
             ])],
             antipatterns: vec![],
+            details: Default::default(),
             message: String::new(),
             suggestions: vec![IrSuggestion {
                 parts: vec![SugPart::Text("x".to_owned())],

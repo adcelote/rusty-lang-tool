@@ -51,6 +51,7 @@ pub(crate) fn spelling_diagnostics<E: Engine>(
             message: message.to_owned(),
             suggestions: suggestions(engine, &token.text, &alphabet),
             source: Source::Spelling,
+            details: None,
         });
     }
     diagnostics
