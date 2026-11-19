@@ -92,14 +92,10 @@ impl RltChecker {
         disambig: &[u8],
     ) -> Result<RltChecker, JsValue> {
         console_error_panic_hook::set_once();
-        let (alphabet, spell_msg) = lang_spell(lang)?;
+        let spell = lang_spell(lang)?;
         let engine = load_native_engine(lang, segment_srx, tagger, disambig)?;
         Ok(Self {
-            inner: Box::new(Checker::with_spell(
-                Composite::new(engine, NoGrammar),
-                alphabet,
-                spell_msg,
-            )),
+            inner: Box::new(spell_checker(Composite::new(engine, NoGrammar), spell)),
         })
     }
 
@@ -118,15 +114,35 @@ impl RltChecker {
         ir_blob: &[u8],
     ) -> Result<RltChecker, JsValue> {
         console_error_panic_hook::set_once();
-        let (alphabet, spell_msg) = lang_spell(lang)?;
+        let spell = lang_spell(lang)?;
         let engine = load_native_engine(lang, segment_srx, tagger, disambig)?;
         let ir = load_ir(ir_blob)?;
         Ok(Self {
-            inner: Box::new(Checker::with_spell(
-                Composite::new(engine, ir),
-                alphabet,
-                spell_msg,
-            )),
+            inner: Box::new(spell_checker(Composite::new(engine, ir), spell)),
+        })
+    }
+
+    /// Like [`with_native`](Self::with_native) plus the optional `speller.fst` word dictionary
+    /// (frequency-ranked suggestions, replaces the heuristic compound split).
+    ///
+    /// # Errors
+    /// Returns a JS error if any artifact buffer is invalid.
+    pub fn with_native_speller(
+        lang: &str,
+        segment_srx: &str,
+        tagger: &[u8],
+        disambig: &[u8],
+        ir_blob: &[u8],
+        speller_fst: &[u8],
+    ) -> Result<RltChecker, JsValue> {
+        console_error_panic_hook::set_once();
+        let spell = lang_spell(lang)?;
+        let engine = load_native_engine(lang, segment_srx, tagger, disambig)?
+            .with_speller(speller_fst.to_vec())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ir = load_ir(ir_blob)?;
+        Ok(Self {
+            inner: Box::new(spell_checker(Composite::new(engine, ir), spell)),
         })
     }
 
@@ -146,17 +162,13 @@ impl RltChecker {
         confusion_blob: &[u8],
     ) -> Result<RltChecker, JsValue> {
         console_error_panic_hook::set_once();
-        let (alphabet, spell_msg) = lang_spell(lang)?;
+        let spell = lang_spell(lang)?;
         let engine = load_native_engine(lang, segment_srx, tagger, disambig)?;
         let ir = load_ir(ir_blob)?;
         let confusion = ConfusionChecker::from_rkyv_bytes(confusion_blob)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(Self {
-            inner: Box::new(Checker::with_spell(
-                WithConfusion::new(Composite::new(engine, ir), confusion),
-                alphabet,
-                spell_msg,
-            )),
+            inner: Box::new(spell_checker(WithConfusion::new(Composite::new(engine, ir), confusion), spell)),
         })
     }
 
@@ -181,17 +193,13 @@ impl RltChecker {
         l4_verb: &[u8],
     ) -> Result<RltChecker, JsValue> {
         console_error_panic_hook::set_once();
-        let (alphabet, spell_msg) = lang_spell(lang)?;
+        let spell = lang_spell(lang)?;
         let engine = load_native_engine(lang, segment_srx, tagger, disambig)?;
         let ir = load_ir(ir_blob)?;
         let l4 = Tagger::from_bytes(l4_model, l4_tokenizer, l4_labels, l4_meta, l4_verb)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(Self {
-            inner: Box::new(Checker::with_spell(
-                WithGrammar::new(Composite::new(engine, ir), l4),
-                alphabet,
-                spell_msg,
-            )),
+            inner: Box::new(spell_checker(WithGrammar::new(Composite::new(engine, ir), l4), spell)),
         })
     }
 
@@ -215,10 +223,16 @@ fn load_engine(tokenizer_bin: &[u8], rules_bin: &[u8]) -> Result<VendoredEngine,
 
 /// The language's L1 spell-check alphabet (Cyrillic for ru, ASCII for en/de) and its localized
 /// spelling-diagnostic message (LanguageTool's `spelling` string, so a German hit reads German).
-fn lang_spell(lang: &str) -> Result<(&'static str, &'static str), JsValue> {
+fn lang_spell(lang: &str) -> Result<&'static rlt_lang::SpellConfig, JsValue> {
     rlt_lang::config(lang)
-        .map(|c| (c.spell.alphabet, c.spell.message))
+        .map(|c| &c.spell)
         .ok_or_else(|| JsValue::from_str(&format!("unknown language {lang:?}")))
+}
+
+fn spell_checker<B: Engine + GrammarChecker>(backend: B, spell: &rlt_lang::SpellConfig) -> Checker<B> {
+    Checker::with_spell(backend, spell.alphabet, spell.message)
+        .with_replacement_pairs(spell.replacement_pairs)
+        .with_german_agreement(spell.german_agreement)
 }
 
 /// Build the native engine from in-memory artifacts (disambiguation skipped if `disambig` is empty).

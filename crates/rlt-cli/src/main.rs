@@ -270,7 +270,7 @@ fn load_native_engine(cfg: &'static rlt_lang::LangConfig) -> Result<rlt_native::
     let srx = PathBuf::from(cfg.segment_srx_path());
     let tagger = PathBuf::from(cfg.tagger_path());
     let disambig = PathBuf::from(cfg.disambig_path());
-    rlt_native::NativeEngine::from_paths(
+    let engine = rlt_native::NativeEngine::from_paths(
         cfg,
         &srx,
         &tagger,
@@ -284,7 +284,14 @@ fn load_native_engine(cfg: &'static rlt_lang::LangConfig) -> Result<rlt_native::
             tagger.display(),
             cfg.code,
         )
-    })
+    })?;
+    // Optional full-word dictionary: replaces the heuristic compound split when present.
+    match std::fs::read(cfg.speller_path()) {
+        Ok(bytes) => engine
+            .with_speller(bytes)
+            .with_context(|| format!("loading {}", cfg.speller_path())),
+        Err(_) => Ok(engine),
+    }
 }
 
 /// Load + compile the IR grammar matcher from `cfg`'s rkyv blob.
@@ -336,22 +343,29 @@ fn load_tagger(cfg: &rlt_lang::LangConfig) -> Option<Tagger<RtenTagSource>> {
     }
 }
 
+fn configure<B: Engine + GrammarChecker>(c: Checker<B>, spell: &rlt_lang::SpellConfig) -> Checker<B> {
+    c.with_replacement_pairs(spell.replacement_pairs)
+        .with_german_agreement(spell.german_agreement)
+}
+
 /// Stack L3 confusion (always) and L4 neural tagging (when present) onto an L1/L2 backend and run
 /// the full cascade. Generic so both `--matcher` backends share one composition path.
 fn check_with_layers<B: Engine + GrammarChecker>(
     backend: B,
     confusion: ConfusionChecker,
     tagger: Option<Tagger<RtenTagSource>>,
-    alphabet: &'static str,
-    spell_message: &'static str,
+    spell: &rlt_lang::SpellConfig,
     text: &str,
 ) -> Vec<Diagnostic> {
     let confused = WithConfusion::new(backend, confusion);
     match tagger {
-        Some(t) => {
-            Checker::with_spell(WithGrammar::new(confused, t), alphabet, spell_message).check(text)
-        }
-        None => Checker::with_spell(confused, alphabet, spell_message).check(text),
+        Some(t) => configure(
+            Checker::with_spell(WithGrammar::new(confused, t), spell.alphabet, spell.message),
+            spell,
+        )
+        .check(text),
+        None => configure(Checker::with_spell(confused, spell.alphabet, spell.message), spell)
+            .check(text),
     }
 }
 
@@ -403,8 +417,7 @@ fn run_check(
                 nlprule,
                 confusion,
                 tagger,
-                cfg.spell.alphabet,
-                cfg.spell.message,
+                &cfg.spell,
                 &text,
             )
         }
@@ -417,8 +430,7 @@ fn run_check(
                         Composite::new(native, ir),
                         confusion,
                         tagger,
-                        cfg.spell.alphabet,
-                        cfg.spell.message,
+                        &cfg.spell,
                         &text,
                     )
                 }
@@ -428,8 +440,7 @@ fn run_check(
                         Composite::new(nlprule, ir),
                         confusion,
                         tagger,
-                        cfg.spell.alphabet,
-                        cfg.spell.message,
+                        &cfg.spell,
                         &text,
                     )
                 }

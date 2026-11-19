@@ -142,8 +142,14 @@ pub(crate) fn german_agreement(analysis: &Analysis) -> Vec<Diagnostic> {
             out.push(d);
         }
     }
-    if let Some(d) = subject_verb(toks) {
-        out.push(d);
+    for i in (0..toks.len()).filter(|&i| toks[i].tags.iter().any(|g| g == "SENT_START")) {
+        // One sentence at a time: the slice runs to the next sentence start.
+        let end = (i + 1..toks.len())
+            .find(|&k| toks[k].tags.iter().any(|g| g == "SENT_START"))
+            .unwrap_or(toks.len());
+        if let Some(d) = subject_verb(&toks[i..end]) {
+            out.push(d);
+        }
     }
     out
 }
