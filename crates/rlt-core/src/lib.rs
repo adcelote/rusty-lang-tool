@@ -17,6 +17,7 @@
 
 mod disambig;
 mod matcher;
+mod agree;
 mod spell;
 #[doc(hidden)]
 pub use spell::fuzz_edits1;
@@ -214,6 +215,8 @@ pub struct Checker<B: Engine + GrammarChecker> {
     spell_message: &'static str,
     /// Sound-alike confusion pairs for suggestion candidates ([`rlt_lang::SpellConfig::replacement_pairs`]).
     replacement_pairs: &'static [(&'static str, &'static str)],
+    /// Run the native German agreement checks.
+    german_agreement: bool,
 }
 
 /// English default for the L1 spelling message when no language-specific one is supplied (the nlprule
@@ -229,6 +232,7 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             alphabet: spell::ASCII_ALPHABET,
             spell_message: DEFAULT_SPELL_MESSAGE,
             replacement_pairs: &[],
+            german_agreement: false,
         }
     }
 
@@ -240,7 +244,15 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             alphabet,
             spell_message,
             replacement_pairs: &[],
+            german_agreement: false,
         }
+    }
+
+    /// Enable the native German agreement checks (article–noun, subject–verb).
+    #[must_use]
+    pub fn with_german_agreement(mut self, on: bool) -> Self {
+        self.german_agreement = on;
+        self
     }
 
     /// Add the language's sound-alike confusion pairs to the spelling suggestions.
@@ -266,6 +278,9 @@ impl<B: Engine + GrammarChecker> Checker<B> {
             self.replacement_pairs,
         );
         diagnostics.extend(self.backend.grammar_diagnostics(text, &analysis));
+        if self.german_agreement {
+            diagnostics.extend(agree::german_agreement(&analysis));
+        }
         strip_noop_suggestions(text, &mut diagnostics);
         absorb_leading_space(text, &mut diagnostics);
         merge_equivalent(text, &mut diagnostics);
