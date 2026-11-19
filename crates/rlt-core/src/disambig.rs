@@ -245,6 +245,7 @@ impl GrammarChecker for ConfusionChecker {
                         replacement: recase(&tokens[i].text, alt),
                     }],
                     source: Source::Statistical,
+                    details: None,
                 });
             }
         }

@@ -28,7 +28,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
-use rlt_ir::{Case, Construct, ExceptionPat, ExceptionScope, Rule, SugPart, Suggestion, TokenPat};
+use rlt_ir::{
+    Case, Construct, ExceptionPat, ExceptionScope, Rule, RuleDetails, SugPart, Suggestion, TokenPat,
+};
 use xsd_parser_types::quick_xml::{DeserializeSync, SliceReader, XmlReader};
 
 use lt_schema::{pattern, rules};
@@ -421,6 +423,42 @@ fn collect_examples(r: &rules::RuleElementType, group_id: Option<&str>, out: &mu
     }
 }
 
+/// The erroneous sentence and its corrected twin for an `<example correction="…">`, or `None` for
+/// examples without a marker or correction.
+///
+/// The XML reader trims whitespace at the edges of the `<marker>` text, so `Spiel<marker> weil</marker>`
+/// arrives as `Spiel` + `weil`; a space is put back where two word characters would otherwise touch.
+fn example_pair(ex: &rules::ExampleElementType) -> Option<(String, String)> {
+    let fix = ex
+        .correction
+        .as_deref()?
+        .split('|')
+        .next()?
+        .trim()
+        .to_owned();
+    if fix.is_empty() {
+        return None;
+    }
+    let glue = |a: &str, b: &str| {
+        a.chars().last().is_some_and(char::is_alphanumeric)
+            && b.chars().next().is_some_and(char::is_alphanumeric)
+    };
+    let before = ex.text_before.as_ref().map_or("", |t| t.0.as_str());
+    let [rules::ExampleElementTypeContent::Marker(m)] = ex.content.as_slice() else {
+        return None;
+    };
+    let marked = m.value.content.trim();
+    let after = m.text_after.as_ref().map_or("", |t| t.0.as_str());
+    let sp1 = if glue(before, marked) { " " } else { "" };
+    let sp2 = if glue(marked, after) { " " } else { "" };
+    let sp1f = if glue(before, &fix) { " " } else { "" };
+    let sp2f = if glue(&fix, after) { " " } else { "" };
+    Some((
+        format!("{before}{sp1}{marked}{sp2}{after}"),
+        format!("{before}{sp1f}{fix}{sp2f}{after}"),
+    ))
+}
+
 /// Reconstruct an example's plain text and marker span from its mixed content.
 fn lower_example(rule_id: &str, ex: &rules::ExampleElementType) -> Example {
     let corrections = ex
@@ -467,7 +505,7 @@ fn lower_document(doc: &rules::RulesElementType) -> Vec<Rule> {
         for c in &cat.content {
             match c {
                 rules::CategoryElementTypeContent::Rule(r) if rule_enabled(r.default.as_ref()) => {
-                    out.push(lower_rule(r, None, &[], &phrases));
+                    out.push(lower_rule(r, None, &[], None, &phrases));
                 }
                 rules::CategoryElementTypeContent::Rulegroup(g)
                     if group_enabled(g.default.as_ref()) =>
@@ -488,7 +526,9 @@ fn lower_document(doc: &rules::RulesElementType) -> Vec<Rule> {
                         g.rule
                             .iter()
                             .filter(|r| rule_enabled(r.default.as_ref()))
-                            .map(|r| lower_rule(r, Some(&g.id), &group_aps, &phrases)),
+                            .map(|r| {
+                                lower_rule(r, Some(&g.id), &group_aps, g.url.as_deref(), &phrases)
+                            }),
                     );
                 }
                 // `default="off"`/`"temp_off"` rules and groups are disabled in LT — skip them.
@@ -557,6 +597,7 @@ fn lower_rule(
     r: &rules::RuleElementType,
     group_id: Option<&str>,
     group_antipatterns: &[Vec<Construct>],
+    group_url: Option<&str>,
     phrases: &Phrases,
 ) -> Rule {
     let id =
@@ -568,8 +609,24 @@ fn lower_rule(
     let mut message = String::new();
     let mut suggestions = Vec::new();
     let mut antipatterns: Vec<Vec<Construct>> = group_antipatterns.to_vec();
+    let mut details = RuleDetails {
+        url: group_url.map(str::to_owned),
+        ..RuleDetails::default()
+    };
     for c in &r.content {
         match c {
+            rules::RuleElementTypeContent::Url(u) => {
+                let u = u.trim();
+                if !u.is_empty() {
+                    details.url = Some(u.to_owned());
+                }
+            }
+            rules::RuleElementTypeContent::Example(ex) if details.example_wrong.is_none() => {
+                if let Some((wrong, right)) = example_pair(ex) {
+                    details.example_wrong = Some(wrong);
+                    details.example_right = Some(right);
+                }
+            }
             rules::RuleElementTypeContent::Pattern(p) => {
                 let start = pattern.len();
                 lower_pattern(&p.content, &mut pattern, phrases);
@@ -613,6 +670,7 @@ fn lower_rule(
         antipatterns,
         message,
         suggestions,
+        details,
     }
 }
 

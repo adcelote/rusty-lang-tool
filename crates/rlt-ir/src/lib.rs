@@ -39,6 +39,31 @@ pub struct Rule {
     pub message: String,
     /// Correction templates rendered against the matched tokens to produce replacements.
     pub suggestions: Vec<Suggestion>,
+    /// Explanatory material LT ships with the rule (link, example), shown as the finding's "why".
+    pub details: RuleDetails,
+}
+
+/// Explanation material from the rule's `<url>` and its first corrected `<example>`.
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    Archive,
+    Serialize,
+    Deserialize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct RuleDetails {
+    /// `<url>` of the rule (or of its enclosing `<rulegroup>`): further reading.
+    pub url: Option<String>,
+    /// The first erroneous `<example>` sentence with a correction (marker tags removed).
+    pub example_wrong: Option<String>,
+    /// That sentence with the marked part replaced by the first correction.
+    pub example_right: Option<String>,
 }
 
 /// A correction template: an ordered sequence of literal text and back-references to matched
@@ -676,6 +701,7 @@ mod tests {
             suggestions: vec![Suggestion {
                 parts: vec![SugPart::Text("color".to_owned())],
             }],
+            details: RuleDetails::default(),
         }];
 
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&rules).expect("serialize");

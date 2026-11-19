@@ -135,6 +135,7 @@ impl GrammarChecker for VendoredEngine {
                     })
                     .collect(),
                 source: Source::Grammar,
+                details: None,
             })
             .collect()
     }

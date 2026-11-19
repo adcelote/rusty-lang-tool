@@ -143,6 +143,8 @@ pub struct Diagnostic {
     pub suggestions: Vec<Suggestion>,
     /// Which cascade layer produced this finding.
     pub source: Source,
+    /// Link and example from the rule that fired (LT rules only), for a fuller "why".
+    pub details: Option<rlt_ir::RuleDetails>,
 }
 
 /// A single analysed token: surface text, its span, POS tags and lemmas.
@@ -367,6 +369,7 @@ mod noop_guard_tests {
                 })
                 .collect(),
             source: Source::Grammar,
+            details: None,
         }
     }
 
