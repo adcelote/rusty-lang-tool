@@ -343,7 +343,12 @@ fn load_tagger(cfg: &rlt_lang::LangConfig) -> Option<Tagger<RtenTagSource>> {
     }
 }
 
-fn configure<B: Engine + GrammarChecker>(c: Checker<B>, spell: &rlt_lang::SpellConfig) -> Checker<B> {
+fn configure<B: Engine + GrammarChecker>(c: Checker<B>, cfg: &rlt_lang::LangConfig) -> Checker<B> {
+    let spell = &cfg.spell;
+    let c = match (spell.wordlist_message, std::fs::read_to_string(cfg.wordlist_path())) {
+        ("", _) | (_, Err(_)) => c,
+        (msg, Ok(text)) => c.with_wordlist(rlt_core::Wordlist::parse(&text), msg),
+    };
     c.with_replacement_pairs(spell.replacement_pairs)
         .with_german_agreement(spell.german_agreement)
         .with_spanish_agreement(spell.spanish_agreement)
@@ -356,17 +361,17 @@ fn check_with_layers<B: Engine + GrammarChecker>(
     backend: B,
     confusion: ConfusionChecker,
     tagger: Option<Tagger<RtenTagSource>>,
-    spell: &rlt_lang::SpellConfig,
+    cfg: &rlt_lang::LangConfig,
     text: &str,
 ) -> Vec<Diagnostic> {
     let confused = WithConfusion::new(backend, confusion);
     match tagger {
         Some(t) => configure(
-            Checker::with_spell(WithGrammar::new(confused, t), spell.alphabet, spell.message),
-            spell,
+            Checker::with_spell(WithGrammar::new(confused, t), cfg.spell.alphabet, cfg.spell.message),
+            cfg,
         )
         .check(text),
-        None => configure(Checker::with_spell(confused, spell.alphabet, spell.message), spell)
+        None => configure(Checker::with_spell(confused, cfg.spell.alphabet, cfg.spell.message), cfg)
             .check(text),
     }
 }
@@ -419,7 +424,7 @@ fn run_check(
                 nlprule,
                 confusion,
                 tagger,
-                &cfg.spell,
+                cfg,
                 &text,
             )
         }
@@ -432,7 +437,7 @@ fn run_check(
                         Composite::new(native, ir),
                         confusion,
                         tagger,
-                        &cfg.spell,
+                        cfg,
                         &text,
                     )
                 }
@@ -442,7 +447,7 @@ fn run_check(
                         Composite::new(nlprule, ir),
                         confusion,
                         tagger,
-                        &cfg.spell,
+                        cfg,
                         &text,
                     )
                 }
