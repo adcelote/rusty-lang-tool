@@ -418,3 +418,341 @@ mod tests {
         assert!(german_agreement(&analysis(&[("Es", &es), ("kommen", &kommen)])).is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Spanish (EAGLES tagset): determiner–adjective–noun agreement, subject–verb number, and
+// subject–predicate-adjective agreement after ser/estar.
+// ---------------------------------------------------------------------------------------------
+
+/// (gender, number) with `*` for open gender (`C`, `0`) or invariable number (`N`).
+type EsReading = (char, char);
+
+fn es_gn(g: char, n: char) -> EsReading {
+    let g = if matches!(g, 'M' | 'F') { g } else { '*' };
+    let n = if matches!(n, 'S' | 'P') { n } else { '*' };
+    (g, n)
+}
+
+fn es_match(a: EsReading, b: EsReading) -> bool {
+    (a.0 == b.0 || a.0 == '*' || b.0 == '*') && (a.1 == b.1 || a.1 == '*' || b.1 == '*')
+}
+
+fn es_readings(t: &Token, prefix: &str) -> Vec<EsReading> {
+    t.tags
+        .iter()
+        .filter(|g| g.starts_with(prefix))
+        .filter_map(|g| {
+            let c: Vec<char> = g.chars().collect();
+            // Nouns are `NC<gender><number>000`; determiners/adjectives `DA0<g><n>0`, `AQ0<g><n>0`.
+            let k = if prefix == "NC" { 2 } else { 3 };
+            (c.len() > k + 1).then(|| es_gn(c[k], c[k + 1]))
+        })
+        .collect()
+}
+
+/// Determiner kind ("DA" definite / "DI" indefinite) readings of an article; `None` if it is not one.
+fn es_det(t: &Token) -> Option<(&'static str, Vec<EsReading>)> {
+    // Only real articles: other DI/DA-tagged words (todo, mucho, poco, demasiado, lo, ...) are
+    // quantifiers or pronouns with their own agreement.
+    if !matches!(
+        t.text.to_lowercase().as_str(),
+        "el" | "la" | "los" | "las" | "un" | "una" | "unos" | "unas"
+    ) {
+        return None;
+    }
+    let kind = if t.tags.iter().any(|g| g.starts_with("DA0")) {
+        "DA"
+    } else if t.tags.iter().any(|g| g.starts_with("DI0")) {
+        "DI"
+    } else {
+        return None;
+    };
+    let r = es_readings(t, &format!("{kind}0"));
+    (!r.is_empty()).then_some((kind, r))
+}
+
+fn es_form(kind: &str, r: EsReading) -> Option<&'static str> {
+    match (kind, r.0, r.1) {
+        ("DA", 'M', 'S') => Some("el"),
+        ("DA", 'F', 'S') => Some("la"),
+        ("DA", 'M', 'P') => Some("los"),
+        ("DA", 'F', 'P') => Some("las"),
+        ("DI", 'M', 'S') => Some("un"),
+        ("DI", 'F', 'S') => Some("una"),
+        ("DI", 'M', 'P') => Some("unos"),
+        ("DI", 'F', 'P') => Some("unas"),
+        _ => None,
+    }
+}
+
+fn es_is_noun(t: &Token) -> bool {
+    t.tags.iter().any(|g| g.starts_with("NC")) && !is_cap(t)
+}
+
+/// Determiner + adjectives + noun starting at `i`: (adjective count, noun index, readings both agree on).
+fn es_np(toks: &[Token], i: usize) -> Option<(&'static str, Vec<EsReading>, usize, Vec<EsReading>)> {
+    let (kind, det) = es_det(&toks[i])?;
+    let mut j = i + 1;
+    let mut common: Option<Vec<EsReading>> = None;
+    while j < toks.len()
+        && toks[j].tags.iter().any(|g| g.starts_with("AQ"))
+        && (!es_is_noun(&toks[j]) || toks.get(j + 1).is_some_and(es_is_noun))
+    {
+        let ar = es_readings(&toks[j], "AQ0");
+        common = Some(match common {
+            None => ar,
+            Some(c) => c.into_iter().filter(|x| ar.iter().any(|y| es_match(*x, *y))).collect(),
+        });
+        j += 1;
+    }
+    let noun = toks.get(j)?;
+    if !es_is_noun(noun) || noun.text.contains('-') || noun.text.chars().count() < 2 {
+        return None;
+    }
+    if matches!(noun.text.to_lowercase().as_str(), "mil" | "oeste" | "este" | "norte" | "sur" | "mates") {
+        return None;
+    }
+    let nr = es_readings(noun, "NC");
+    let mut all: Vec<EsReading> = nr
+        .iter()
+        .copied()
+        .filter(|n| common.as_ref().is_none_or(|c| c.iter().any(|a| es_match(*a, *n))))
+        .collect();
+    // "el agua", "un águila": feminine nouns with stressed initial a- take el/un.
+    let low = noun.text.to_lowercase();
+    if low.starts_with('a') || low.starts_with("ha") || low.starts_with('á') {
+        if all.iter().any(|r| r.0 == 'F' && r.1 == 'S') {
+            all.push(('M', 'S'));
+        }
+    }
+    // Nothing both the adjectives and the noun accept: leave it to the tagger-gap caveat.
+    Some((kind, det, j, all))
+}
+
+fn es_verb(t: &Token) -> Option<Vec<(char, char)>> {
+    // "son" is also tagged as a noun; the copulas are unambiguous enough by lemma to allow that.
+    let copula = t.lemmas.iter().any(|l| l == "ser" || l == "estar");
+    if t.tags.is_empty() || !(copula || t.tags.iter().all(|g| g.starts_with('V'))) {
+        return None;
+    }
+    let out: Vec<(char, char)> = t
+        .tags
+        .iter()
+        .filter_map(|g| {
+            let c: Vec<char> = g.chars().collect();
+            (c.len() >= 6 && matches!(c[2], 'I' | 'S' | 'M') && matches!(c[4], '1' | '2' | '3') && matches!(c[5], 'S' | 'P'))
+                .then(|| (c[4], c[5]))
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
+
+fn es_is_copula(t: &Token) -> bool {
+    t.lemmas.iter().any(|l| l == "ser" || l == "estar") && es_verb(t).is_some()
+}
+
+const IMPERSONAL: &[&str] = &[
+    "hace", "hay", "había", "hubo", "habrá", "creo", "supongo", "parece", "puede", "pueden", "dijo",
+];
+
+fn es_pronoun(w: &str) -> Option<(char, char)> {
+    match w {
+        "yo" => Some(('1', 'S')),
+        "tú" => Some(('2', 'S')),
+        "él" | "ella" | "usted" => Some(('3', 'S')),
+        "nosotros" | "nosotras" => Some(('1', 'P')),
+        "vosotros" | "vosotras" => Some(('2', 'P')),
+        "ellos" | "ellas" | "ustedes" => Some(('3', 'P')),
+        _ => None,
+    }
+}
+
+/// All Spanish agreement findings for an analysis.
+pub(crate) fn spanish_agreement(analysis: &Analysis) -> Vec<Diagnostic> {
+    let toks = &analysis.tokens;
+    let mut out = Vec::new();
+    for i in 0..toks.len() {
+        if let Some(d) = es_det_noun(toks, i) {
+            out.push(d);
+        }
+    }
+    for i in (0..toks.len()).filter(|&i| toks[i].tags.iter().any(|g| g == "SENT_START")) {
+        let end = (i + 1..toks.len())
+            .find(|&k| toks[k].tags.iter().any(|g| g == "SENT_START"))
+            .unwrap_or(toks.len());
+        if let Some(d) = es_sentence(&toks[i..end]) {
+            out.push(d);
+        }
+    }
+    out
+}
+
+fn es_det_noun(toks: &[Token], i: usize) -> Option<Diagnostic> {
+    let (kind, det, j, all) = es_np(toks, i)?;
+    // A preceding preposition-less determiner like "lo" / quantifier chains are not handled.
+    if all.is_empty() || det.iter().any(|d| all.iter().any(|n| es_match(*d, *n))) {
+        return None;
+    }
+    // "la/las/los" before a word that can also be a verb is often the clitic pronoun ("la saque").
+    if matches!(toks[i].text.to_lowercase().as_str(), "la" | "las" | "los")
+        && toks[j].tags.iter().any(|g| g.starts_with('V'))
+    {
+        return None;
+    }
+    // "cincuenta y una bombillas": numerals agree with their own counting noun.
+    if i > 0 && (matches!(toks[i - 1].text.to_lowercase().as_str(), "y" | "e") || toks[i - 1].tags.iter().any(|g| g == "Z" || g.starts_with("Z"))) {
+        return None;
+    }
+    let mut sugg: Vec<String> = Vec::new();
+    for r in &all {
+        if let Some(f) = es_form(kind, *r) {
+            let f = capitalise(f, &toks[i].text);
+            if !sugg.contains(&f) {
+                sugg.push(f);
+            }
+        }
+    }
+    sugg.truncate(2);
+    Some(Diagnostic {
+        span: if sugg.is_empty() {
+            Span { start: toks[i].span.start, end: toks[j].span.end }
+        } else {
+            toks[i].span
+        },
+        code: "ES_AGREEMENT_RLT".into(),
+        message: "El determinante, el adjetivo y el sustantivo no concuerdan en género o número.".into(),
+        suggestions: sugg.into_iter().map(|s| Suggestion { replacement: s }).collect(),
+        source: Source::Grammar,
+        details: None,
+    })
+}
+
+fn es_sentence(toks: &[Token]) -> Option<Diagnostic> {
+    let first = 1.min(toks.len().saturating_sub(1));
+    let t0 = toks.get(first)?;
+    let mk = |a: usize, b: usize, code: &str, msg: &str| Diagnostic {
+        span: Span { start: toks[a].span.start, end: toks[b].span.end },
+        code: code.into(),
+        message: msg.into(),
+        suggestions: Vec::new(),
+        source: Source::Grammar,
+        details: None,
+    };
+    const SV: &str = "El sujeto y el verbo no concuerdan en número o persona.";
+    if let Some((p, n)) = es_pronoun(&t0.text.to_lowercase()) {
+        let v = toks.get(first + 1)?;
+        let vr = es_verb(v)?;
+        if IMPERSONAL.contains(&v.text.to_lowercase().as_str()) {
+            return None;
+        }
+        return (!vr.contains(&(p, n))).then(|| mk(first, first + 1, "ES_SUBJECT_VERB_RLT", SV));
+    }
+    let (_, det, j, all) = es_np(toks, first)?;
+    // Time expressions are adverbials, not subjects ("Una vez quise", "La próxima semana abren").
+    if matches!(
+        toks[j].text.to_lowercase().as_str(),
+        "vez" | "veces" | "semana" | "semanas" | "mañana" | "tarde" | "noche" | "día" | "días" | "mes" | "meses"
+            | "año" | "años" | "momento" | "rato" | "hora" | "horas"
+    ) {
+        return None;
+    }
+    let nums: Vec<char> = {
+        let mut v: Vec<char> = all
+            .iter()
+            .filter(|n| det.iter().any(|d| es_match(*d, **n)))
+            .map(|n| n.1)
+            .filter(|c| *c != '*')
+            .collect();
+        v.dedup();
+        v
+    };
+    if nums.len() != 1 {
+        return None;
+    }
+    let num = nums[0];
+    let v = toks.get(j + 1)?;
+    let vr = es_verb(v)?;
+    // Impersonal/parenthetical verbs and "El resto son …" (the verb agrees with the predicate).
+    if IMPERSONAL.contains(&v.text.to_lowercase().as_str()) || (es_is_copula(v) && num == 'S') {
+        return None;
+    }
+    if !vr.iter().any(|(p, n)| *p == '3' && *n == num) {
+        return Some(mk(first, j + 1, "ES_SUBJECT_VERB_RLT", SV));
+    }
+    // Subject + ser/estar + (adverbs) + adjective that disagrees with the subject.
+    if es_is_copula(v) {
+        let mut k = j + 2;
+        while toks.get(k).is_some_and(|t| t.tags.iter().all(|g| g.starts_with("RG"))) && !toks[k].tags.is_empty() {
+            k += 1;
+        }
+        let adj = toks.get(k)?;
+        if !adj.tags.iter().all(|g| g.starts_with("AQ") || g.starts_with("_GN")) || es_readings(adj, "AQ0").is_empty() {
+            return None;
+        }
+        let ar = es_readings(adj, "AQ0");
+        // Only when the adjective ends the clause (or is coordinated with another adjective);
+        // "hermosas y elegantes aves" continues into a noun phrase.
+        let after = toks.get(k + 1);
+        let clause_end = after.is_none_or(|n| n.tags.iter().any(|g| g == "SENT_END" || g == "_PUNCT"));
+        let coord_adj = after.is_some_and(|n| n.tags.iter().any(|g| g == "CC"))
+            && toks.get(k + 2).is_some_and(|n| n.tags.iter().any(|g| g.starts_with("AQ")) && !es_is_noun(n));
+        if !(clause_end || coord_adj) {
+            return None;
+        }
+        let subj: Vec<EsReading> = all.iter().copied().filter(|n| det.iter().any(|d| es_match(*d, *n))).collect();
+        if !subj.iter().any(|s| ar.iter().any(|a| es_match(*s, *a))) {
+            return Some(mk(first, k, "ES_AGREEMENT_RLT", "El adjetivo no concuerda con el sujeto en género o número."));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod es_tests {
+    use super::*;
+
+    fn tok(text: &str, start: usize, tags: &[&str], lemmas: &[&str]) -> Token {
+        Token {
+            text: text.into(),
+            span: Span { start, end: start + text.len() },
+            tags: tags.iter().map(|s| (*s).to_owned()).collect(),
+            lemmas: lemmas.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    fn analysis(words: &[(&str, &[&str], &[&str])]) -> Analysis {
+        let mut pos = 0;
+        let mut tokens = vec![tok("", 0, &["SENT_START"], &[])];
+        for (w, t, l) in words {
+            tokens.push(tok(w, pos, t, l));
+            pos += w.len() + 1;
+        }
+        Analysis { tokens }
+    }
+
+    #[test]
+    fn flags_article_gender_and_offers_form() {
+        let a = analysis(&[("La", &["DA0FS0"], &["el"]), ("problema", &["NCMS000"], &["problema"])]);
+        let d = spanish_agreement(&a);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].suggestions[0].replacement, "El");
+    }
+
+    #[test]
+    fn accepts_el_agua_and_matching_pairs() {
+        let a = analysis(&[("El", &["DA0MS0"], &["el"]), ("agua", &["NCFS000"], &["agua"])]);
+        assert!(spanish_agreement(&a).is_empty());
+        let b = analysis(&[("Las", &["DA0FP0"], &["el"]), ("casas", &["NCFP000"], &["casa"])]);
+        assert!(spanish_agreement(&b).is_empty());
+    }
+
+    #[test]
+    fn flags_subject_verb_number() {
+        let a = analysis(&[
+            ("Los", &["DA0MP0"], &["el"]),
+            ("resultados", &["NCMP000"], &["resultado"]),
+            ("es", &["VSIP3S0"], &["ser"]),
+        ]);
+        assert_eq!(spanish_agreement(&a)[0].code, "ES_SUBJECT_VERB_RLT");
+    }
+}

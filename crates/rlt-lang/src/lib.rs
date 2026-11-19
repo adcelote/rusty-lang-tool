@@ -118,6 +118,8 @@ pub struct SpellConfig {
     pub replacement_pairs: &'static [(&'static str, &'static str)],
     /// Run the native German article–noun / subject–verb agreement checks (`rlt-core::agree`).
     pub german_agreement: bool,
+    /// Run the native Spanish agreement checks (`rlt-core::agree`).
+    pub spanish_agreement: bool,
 }
 
 /// The structural tags a language's grammar anchors on, assigned by the engine from token shape.
@@ -427,6 +429,7 @@ pub static EN: LangConfig = LangConfig {
         message: "Possible spelling mistake found.",
         replacement_pairs: &[],
         german_agreement: false,
+        spanish_agreement: false,
     },
     normalization: Normalization::None,
     elision: &[],
@@ -579,6 +582,7 @@ pub static DE: LangConfig = LangConfig {
         ("ug", "ung"),
         ],
         german_agreement: true,
+        spanish_agreement: false,
     },
     normalization: Normalization::None,
     elision: &[],
@@ -626,6 +630,7 @@ pub static RU: LangConfig = LangConfig {
         message: "Возможно найдена орфографическая ошибка.",
         replacement_pairs: &[],
         german_agreement: false,
+        spanish_agreement: false,
     },
     normalization: Normalization::None,
     elision: &[],
@@ -672,6 +677,7 @@ pub static AR: LangConfig = LangConfig {
         message: "وُجد خطأ إملائي محتمل",
         replacement_pairs: &[],
         german_agreement: false,
+        spanish_agreement: false,
     },
     normalization: Normalization::StripCombiningMarks,
     elision: &[],
@@ -714,6 +720,7 @@ pub static FR: LangConfig = LangConfig {
         message: "Faute de frappe possible trouvée.",
         replacement_pairs: &[],
         german_agreement: false,
+        spanish_agreement: false,
     },
     normalization: Normalization::None,
     // French elision clitics (the apostrophe-final dict keys): articles/pronouns/conjunctions that
@@ -763,6 +770,7 @@ pub static ES: LangConfig = LangConfig {
         message: "Se ha encontrado un posible error ortográfico.",
         replacement_pairs: &[],
         german_agreement: false,
+        spanish_agreement: true,
     },
     normalization: Normalization::None,
     elision: &[],
@@ -803,6 +811,7 @@ pub static IT: LangConfig = LangConfig {
         message: "Trovato un probabile errore di battitura.",
         replacement_pairs: &[],
         german_agreement: false,
+        spanish_agreement: false,
     },
     normalization: Normalization::None,
     // Italian elision clitics: articles, articulated prepositions, and a few pronouns/adjectives that

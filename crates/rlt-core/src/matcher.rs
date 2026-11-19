@@ -529,6 +529,10 @@ fn compile_constraint(
 
 /// Compile a whole-token-anchored regex (optionally case-insensitive). `None` on regex error.
 fn anchored(pattern: &str, case_insensitive: bool) -> Option<Regex> {
+    // `\p{Lu}`/`\p{Ll}` under `(?i)` match every letter. LanguageTool relies on them to mean
+    // "upper/lower case" (e.g. the Spanish `_possible_NP` rule), so such patterns stay case-sensitive.
+    let case_insensitive = case_insensitive
+        && !["\\p{Lu}", "\\p{Ll}", "\\p{Lt}"].iter().any(|c| pattern.contains(c));
     let prefix = if case_insensitive { "(?i)" } else { "" };
     Regex::new(&format!("{prefix}^(?:{pattern})$")).ok()
 }
@@ -972,14 +976,32 @@ fn apply_action(action: &CompiledAction, token: &mut Token) {
             }
         }
         CompiledAction::Remove { tags, lemmas } => {
-            token.tags.retain(|t| !tags.iter().any(|m| m.matches(t)));
+            // A disambiguation rule must never strip every reading: tokens with no tags are invisible
+            // to all later grammar rules (observed on Spanish: whole sentences lost their tags).
+            let kept: Vec<String> = token
+                .tags
+                .iter()
+                .filter(|t| !tags.iter().any(|m| m.matches(t)))
+                .cloned()
+                .collect();
+            if !kept.is_empty() || token.tags.is_empty() {
+                token.tags = kept;
+            }
             if !lemmas.is_empty() {
                 token.lemmas.retain(|l| !lemmas.iter().any(|rm| rm == l));
             }
         }
         CompiledAction::Filter { tags } => {
             if !tags.is_empty() {
-                token.tags.retain(|t| tags.iter().any(|m| m.matches(t)));
+                let kept: Vec<String> = token
+                    .tags
+                    .iter()
+                    .filter(|t| tags.iter().any(|m| m.matches(t)))
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    token.tags = kept;
+                }
             }
         }
     }

@@ -346,6 +346,7 @@ fn load_tagger(cfg: &rlt_lang::LangConfig) -> Option<Tagger<RtenTagSource>> {
 fn configure<B: Engine + GrammarChecker>(c: Checker<B>, spell: &rlt_lang::SpellConfig) -> Checker<B> {
     c.with_replacement_pairs(spell.replacement_pairs)
         .with_german_agreement(spell.german_agreement)
+        .with_spanish_agreement(spell.spanish_agreement)
 }
 
 /// Stack L3 confusion (always) and L4 neural tagging (when present) onto an L1/L2 backend and run
