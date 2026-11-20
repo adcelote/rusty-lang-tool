@@ -656,6 +656,10 @@ fn lower_rule(
                 }
                 antipatterns.push(ap);
             }
+            // Filters that only veto a match when a compound/phrase is not a known word. Without a
+            // dictionary-backed port they are treated as accepting, which keeps the rule firing.
+            rules::RuleElementTypeContent::Filter(f)
+                if PASS_THROUGH_FILTERS.iter().any(|c| f.class.ends_with(c)) => {}
             rules::RuleElementTypeContent::Filter(f) => pattern.push(Construct::Opaque {
                 class: f.class.clone(),
                 args: f.args.clone(),
@@ -843,6 +847,13 @@ fn push_text(parts: &mut Vec<SugPart>, text: &str) {
         parts.push(SugPart::Text(literal));
     }
 }
+
+/// Java filter classes that only veto (never rewrite) a match; see the Filter arm in rule lowering.
+const PASS_THROUGH_FILTERS: &[&str] = &[
+    "RemoveUnknownCompoundsFilter",
+    "PotentialCompoundFilter",
+    "ValidWordFilter",
+];
 
 /// Map LT's `case_conversion` to the IR [`Case`].
 fn map_case(c: Option<&pattern::MatchCaseConversionType>) -> Case {
