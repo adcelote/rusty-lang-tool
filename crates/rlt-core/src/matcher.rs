@@ -621,7 +621,26 @@ fn anchored(pattern: &str, case_insensitive: bool) -> Option<Regex> {
             .iter()
             .any(|c| pattern.contains(c));
     let prefix = if case_insensitive { "(?i)" } else { "" };
-    Regex::new(&format!("{prefix}^(?:{pattern})$")).ok()
+    Regex::new(&format!("{prefix}^(?:{pattern})$"))
+        .ok()
+        .or_else(|| {
+            // Java accepts `\–` (an escaped non-ASCII character); Rust's regex does not.
+            let mut cleaned = String::with_capacity(pattern.len());
+            let mut chars = pattern.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\\' && chars.peek().is_some_and(|n| !n.is_ascii() || matches!(n, '<' | '>')) {
+                    continue;
+                }
+                cleaned.push(c);
+            }
+            Regex::new(&format!("{prefix}^(?:{cleaned})$")).ok()
+        })
+        .or_else(|| {
+            if std::env::var_os("RLT_REGEX_DEBUG").is_some() {
+                eprintln!("regex failed: {pattern}");
+            }
+            None
+        })
 }
 
 /// Whether whitespace precedes `tokens[k]` — i.e. there is a gap between this token's start and the
