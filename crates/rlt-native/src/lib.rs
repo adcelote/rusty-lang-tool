@@ -92,7 +92,8 @@ impl NativeEngine {
         self.speller = Some(
             fst::Map::new(bytes).map_err(|e| NativeError::Disambig(format!("speller.fst: {e}")))?,
         );
-        // A full speller dictionary replaces the heuristic compound split.
+        // A full speller dictionary replaces the heuristic compound split: the split accepted
+        // misspelled compounds (typo recall 14/15 → 10/15 on the compound test set).
         self.compound_fallback = false;
         Ok(self)
     }
@@ -250,15 +251,18 @@ impl Engine for NativeEngine {
 
     fn is_known(&self, word: &str) -> bool {
         let key = self.lookup_key(word);
-        self.tagger.is_known(&key)
-            || self
-                .speller
-                .as_ref()
-                .is_some_and(|m| m.contains_key(key.as_bytes()))
-            || (self.compound_fallback
-                && self
-                    .compounds
-                    .is_some_and(|rules| compound::is_compound(&key, &self.tagger, rules)))
+        if key.contains('-') && !key.starts_with('-') && !key.ends_with('-') {
+            // Hyphenated compounds ("Get-together", "Preis-Leistungs-Verhältnis"): every part must
+            // be a word of its own, in either case.
+            let parts_known = key.split('-').all(|part| {
+                !part.is_empty()
+                    && (part.chars().all(|c| c.is_ascii_digit()) || self.hyphen_part_known(part))
+            });
+            if parts_known {
+                return true;
+            }
+        }
+        self.part_known(&key)
     }
 
     fn word_frequency(&self, word: &str) -> u8 {
@@ -270,6 +274,33 @@ impl Engine for NativeEngine {
 }
 
 impl NativeEngine {
+    /// A part of a hyphenated compound: known as written, lower-cased, capitalised, or without a
+    /// linking element ("Leistungs-" → "Leistung").
+    pub(crate) fn hyphen_part_known(&self, part: &str) -> bool {
+        let lower = part.to_lowercase();
+        let upper = rlt_core::capitalize_first(&lower);
+        [part, lower.as_str(), upper.as_str()]
+            .iter()
+            .any(|p| self.part_known(p))
+            || ["es", "s", "en", "n"].iter().any(|suffix| {
+                let stem = upper.strip_suffix(suffix).filter(|s| s.chars().count() > 2);
+                stem.is_some_and(|s| self.part_known(s))
+            })
+    }
+
+    pub(crate) fn part_known(&self, key: &str) -> bool {
+        let key = Cow::Borrowed(key);
+        self.tagger.is_known(&key)
+            || self
+                .speller
+                .as_ref()
+                .is_some_and(|m| m.contains_key(key.as_bytes()))
+            || (self.compound_fallback
+                && self
+                    .compounds
+                    .is_some_and(|rules| compound::is_compound(&key, &self.tagger, rules)))
+    }
+
     /// The dictionary-lookup key for a surface form under this engine's normalization. For
     /// `StripCombiningMarks`, drop every nonspacing mark; otherwise borrow the surface unchanged
     /// (zero-cost for en/de/ru, and for Arabic input that carries no tashkeel).

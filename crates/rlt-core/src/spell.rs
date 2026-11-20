@@ -58,8 +58,11 @@ pub(crate) fn spelling_diagnostics_with<E: Engine>(
 ) -> Vec<Diagnostic> {
     let alphabet: Vec<char> = alphabet.chars().collect();
     let mut diagnostics = Vec::new();
-    for token in &analysis.tokens {
-        if !is_checkable(&token.text, &alphabet) || engine.is_known(&token.text) {
+    for (i, token) in analysis.tokens.iter().enumerate() {
+        if !is_checkable(&token.text, &alphabet)
+            || engine.is_known(&token.text)
+            || hyphen_run_known(engine, &analysis.tokens, i)
+        {
             continue;
         }
         diagnostics.push(Diagnostic {
@@ -72,6 +75,31 @@ pub(crate) fn spelling_diagnostics_with<E: Engine>(
         });
     }
     diagnostics
+}
+
+/// Whether `tokens[i]` belongs to a hyphenated compound ("Get-together", "Preis-Leistungs-Verhältnis")
+/// that the engine knows as a whole. The tokenizer splits at hyphens, so the parts are looked at
+/// together here.
+fn hyphen_run_known<E: Engine>(engine: &E, tokens: &[crate::Token], i: usize) -> bool {
+    let joined_to = |a: usize, b: usize| tokens[a].span.end == tokens[b].span.start;
+    let is_hyphen = |k: usize| tokens[k].text == "-";
+    let mut lo = i;
+    while lo >= 2 && is_hyphen(lo - 1) && joined_to(lo - 2, lo - 1) && joined_to(lo - 1, lo) {
+        lo -= 2;
+    }
+    let mut hi = i;
+    while hi + 2 < tokens.len()
+        && is_hyphen(hi + 1)
+        && joined_to(hi, hi + 1)
+        && joined_to(hi + 1, hi + 2)
+    {
+        hi += 2;
+    }
+    if lo == hi {
+        return false;
+    }
+    let joined: String = tokens[lo..=hi].iter().map(|t| t.text.as_str()).collect();
+    engine.is_known(&joined)
 }
 
 /// A token is checkable if it is a run of at least [`MIN_LEN`] letters all drawn from `alphabet`
