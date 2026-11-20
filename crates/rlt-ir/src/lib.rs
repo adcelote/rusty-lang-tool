@@ -126,6 +126,8 @@ pub enum Case {
     Lower,
     /// Upper-case the first character only.
     StartUpper,
+    /// Lower-case the first character only (`case_conversion="startlower"`).
+    StartLower,
 }
 
 impl Rule {
@@ -675,7 +677,17 @@ pub enum TagAction {
         /// Whether `postags` are regexes (`postag_regexp="yes"`).
         postag_regexp: bool,
     },
-    /// `action="unify"/"filterall"/"ignore_spelling"`, `<match>` postag synthesis, or a `chunk_re`
+    /// `action="unify"`: keep only the readings of the masked pattern elements that agree in every
+    /// listed feature (number/case/gender). Each feature lists its equivalence classes as postag
+    /// regexes; a reading agrees if some single class combination matches it and every masked token.
+    /// When no combination fits all tokens nothing changes.
+    Unify {
+        /// Per feature, the postag regex of each equivalence class.
+        features: Vec<Vec<String>>,
+        /// Per pattern element (tokens, `<and>`, `<or>` in order): whether it takes part.
+        mask: Vec<bool>,
+    },
+    /// `action="filterall"/"ignore_spelling"`, `<match>` postag synthesis, or a `chunk_re`
     /// token (no chunker) — recognized but not applied. The rule is kept (named) but inert.
     Unsupported,
 }

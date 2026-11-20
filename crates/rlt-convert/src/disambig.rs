@@ -41,14 +41,27 @@ pub fn lower_disambiguation(path: &std::path::Path) -> Result<DisambigReport> {
     let parsed: XRules = quick_xml::de::from_str(&xml)
         .with_context(|| format!("deserializing {}", path.display()))?;
 
+    let unification: std::collections::HashMap<String, Vec<String>> = parsed
+        .unification
+        .iter()
+        .filter_map(|u| {
+            let id = u.feature.clone()?;
+            let classes = u
+                .equivalence
+                .iter()
+                .filter_map(|e| e.token.first().and_then(|t| t.postag.clone()))
+                .collect();
+            Some((id, classes))
+        })
+        .collect();
     let mut rules = Vec::new();
     for group in &parsed.rulegroup {
         for rule in &group.rule {
-            rules.push(lower_rule(rule, group.id.as_deref()));
+            rules.push(lower_rule(rule, group.id.as_deref(), &unification));
         }
     }
     for rule in &parsed.rule {
-        rules.push(lower_rule(rule, None));
+        rules.push(lower_rule(rule, None, &unification));
     }
     let applicable = rules.iter().filter(|r| !r.action.is_unsupported()).count();
     Ok(DisambigReport { rules, applicable })
@@ -72,7 +85,11 @@ pub fn convert_disambiguation(
 /// Lower one `<rule>` into a [`DisambigRule`]. The action is [`TagAction::Unsupported`] if the pattern
 /// uses a construct we can't run (a `<match>`/`chunk_re` token, `<unify>`) or the `<disambig>` action
 /// isn't one we apply.
-fn lower_rule(rule: &XRule, group_id: Option<&str>) -> DisambigRule {
+fn lower_rule(
+    rule: &XRule,
+    group_id: Option<&str>,
+    unification: &std::collections::HashMap<String, Vec<String>>,
+) -> DisambigRule {
     let id = rule
         .id
         .as_deref()
@@ -80,9 +97,10 @@ fn lower_rule(rule: &XRule, group_id: Option<&str>) -> DisambigRule {
         .unwrap_or("DISAMBIG")
         .to_owned();
     let mut pattern = Vec::new();
+    let mut unify: Option<(Vec<String>, Vec<bool>)> = None;
     let supported_pattern = match &rule.pattern {
         Some(p) => {
-            let ok = lower_items(&p.items, &mut pattern);
+            let ok = lower_pattern(&p.items, &mut pattern, &mut unify);
             // `<pattern case_sensitive="yes">` applies to all the pattern's tokens; the serde model
             // doesn't thread it down, so stamp it on after lowering (98 such patterns in en, 284 de).
             if ok && is_yes(p.case_sensitive.as_deref()) {
@@ -93,9 +111,24 @@ fn lower_rule(rule: &XRule, group_id: Option<&str>) -> DisambigRule {
         None => false,
     };
     let action = if supported_pattern && !pattern.is_empty() {
-        rule.disambig
-            .as_ref()
-            .map_or(TagAction::Unsupported, lower_action)
+        match (&unify, rule.disambig.as_ref()) {
+            (Some((ids, mask)), Some(d)) if d.action.as_deref() == Some("unify") => {
+                let features: Vec<Vec<String>> = ids
+                    .iter()
+                    .filter_map(|id| unification.get(id).cloned())
+                    .collect();
+                if features.is_empty() {
+                    TagAction::Unsupported
+                } else {
+                    TagAction::Unify {
+                        features,
+                        mask: mask.clone(),
+                    }
+                }
+            }
+            (None, Some(d)) => lower_action(d),
+            _ => TagAction::Unsupported,
+        }
     } else {
         TagAction::Unsupported
     };
@@ -120,6 +153,60 @@ fn lower_rule(rule: &XRule, group_id: Option<&str>) -> DisambigRule {
         antipatterns,
         action,
     }
+}
+
+/// Lower a rule pattern, additionally understanding a `<unify>` block: its tokens are inlined and the
+/// feature ids plus a per-element participation mask are returned through `unify`.
+fn lower_pattern(
+    items: &[XPatItem],
+    out: &mut Vec<Construct>,
+    unify: &mut Option<(Vec<String>, Vec<bool>)>,
+) -> bool {
+    let count = |v: &[Construct]| {
+        v.iter()
+            .filter(|c| matches!(c, Construct::Token(_) | Construct::Or(_) | Construct::And(_)))
+            .count()
+    };
+    let mut mask: Vec<bool> = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen = false;
+    for item in items {
+        if let XPatItem::Unify(u) = item {
+            seen = true;
+            for ui in &u.items {
+                match ui {
+                    XUnifyItem::Feature(f) => ids.extend(f.id.clone()),
+                    XUnifyItem::Token(t) => {
+                        match lower_token(t) {
+                            Some(p) => out.push(Construct::Token(p)),
+                            None => return false,
+                        }
+                        mask.resize(count(out), true);
+                    }
+                    XUnifyItem::Unsupported => return false,
+                    XUnifyItem::Ignore(g) => {
+                        for t in &g.token {
+                            match lower_token(t) {
+                                Some(p) => out.push(Construct::Token(p)),
+                                None => return false,
+                            }
+                        }
+                        mask.resize(count(out), false);
+                    }
+                }
+            }
+        } else {
+            let one = std::slice::from_ref(item);
+            if !lower_items(one, out) {
+                return false;
+            }
+            mask.resize(count(out), false);
+        }
+    }
+    if seen {
+        *unify = Some((ids, mask));
+    }
+    true
 }
 
 /// Lower an ordered list of pattern items into constructs, returning `false` if any is unsupported
@@ -249,6 +336,8 @@ fn is_yes(v: Option<&str>) -> bool {
 #[derive(Debug, Deserialize)]
 struct XRules {
     #[serde(default)]
+    unification: Vec<XUnification>,
+    #[serde(default)]
     rulegroup: Vec<XRulegroup>,
     #[serde(default)]
     rule: Vec<XRule>,
@@ -295,9 +384,47 @@ enum XPatItem {
     #[serde(rename = "or")]
     Or(XGroup),
     #[serde(rename = "unify")]
-    Unify(serde::de::IgnoredAny),
+    Unify(XUnify),
     #[serde(rename = "feature")]
     Feature(serde::de::IgnoredAny),
+}
+
+#[derive(Debug, Deserialize)]
+struct XUnify {
+    #[serde(rename = "$value", default)]
+    items: Vec<XUnifyItem>,
+}
+
+#[derive(Debug, Deserialize)]
+enum XUnifyItem {
+    #[serde(rename = "feature")]
+    Feature(XFeature),
+    #[serde(rename = "token")]
+    Token(XToken),
+    #[serde(rename = "unify-ignore")]
+    Ignore(XGroup),
+    #[serde(other)]
+    Unsupported,
+}
+
+#[derive(Debug, Deserialize)]
+struct XFeature {
+    #[serde(rename = "@id")]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XUnification {
+    #[serde(rename = "@feature")]
+    feature: Option<String>,
+    #[serde(default)]
+    equivalence: Vec<XEquivalence>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XEquivalence {
+    #[serde(default)]
+    token: Vec<XToken>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,7 +529,7 @@ mod tests {
                    <token regexp=\"yes\">[A-Z]+</token></pattern>\
                    <disambig postag=\"NNP\"/></rule></rules>";
         let parsed: XRules = quick_xml::de::from_str(xml).expect("parse");
-        let rule = lower_rule(&parsed.rule[0], None);
+        let rule = lower_rule(&parsed.rule[0], None, &Default::default());
         assert!(
             rule.pattern
                 .iter()

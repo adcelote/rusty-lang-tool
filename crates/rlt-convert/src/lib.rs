@@ -851,6 +851,7 @@ fn map_case(c: Option<&pattern::MatchCaseConversionType>) -> Case {
         Some(M::Allupper) => Case::Upper,
         Some(M::Alllower) => Case::Lower,
         Some(M::Startupper | M::Firstupper) => Case::StartUpper,
+        Some(M::Startlower) => Case::StartLower,
         _ => Case::Keep,
     }
 }

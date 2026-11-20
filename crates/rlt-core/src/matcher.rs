@@ -823,10 +823,27 @@ fn render(
         end: tokens[mtok_end - 1].span.end,
     };
 
+    // LT capitalises a suggestion that starts with literal text when the text it replaces starts
+    // upper-case (a suggestion built from `<match>` parts keeps its own case conversion).
+    let upper_start = text
+        .get(span.start..)
+        .and_then(|t| t.chars().next())
+        .is_some_and(char::is_uppercase);
     let suggestions = dedup_suggestions(
         rule.suggestions
             .iter()
-            .flat_map(|s| render_suggestion(s, text, tokens, captures, synth))
+            .flat_map(|s| {
+                let literal_first = matches!(s.parts.first(), Some(CompiledPart::Text(_)));
+                render_suggestion(s, text, tokens, captures, synth)
+                    .into_iter()
+                    .map(move |r| {
+                        if upper_start && literal_first {
+                            crate::capitalize_first(&r)
+                        } else {
+                            r
+                        }
+                    })
+            })
             .map(Some),
     );
     // A rule that carries no renderable suggestion at all (message only, or its suggestions need
@@ -1029,6 +1046,12 @@ fn apply_case(s: &str, case: Case) -> String {
         Case::Upper => s.to_uppercase(),
         Case::Lower => s.to_lowercase(),
         Case::StartUpper => crate::capitalize_first(s),
+        Case::StartLower => {
+            let mut chars = s.chars();
+            chars.next().map_or_else(String::new, |c| {
+                c.to_lowercase().collect::<String>() + chars.as_str()
+            })
+        }
     }
 }
 
@@ -1066,6 +1089,10 @@ enum CompiledAction {
     },
     Filter {
         tags: Vec<TagMatch>,
+    },
+    Unify {
+        features: Vec<Vec<TagMatch>>,
+        mask: Vec<bool>,
     },
 }
 
@@ -1105,6 +1132,7 @@ impl Disambiguator {
 /// marked tokens. Matches are collected before mutating so the scan can borrow `tokens` immutably.
 fn apply_disambig_rule(rule: &CompiledDisambig, tokens: &mut [Token]) {
     let mut hits: Vec<(usize, usize)> = Vec::new();
+    let mut unify_hits: Vec<Vec<(usize, usize)>> = Vec::new();
     let mut caps = vec![None; rule.elements.len()];
     let mut ti = 0;
     while ti < tokens.len() {
@@ -1114,7 +1142,16 @@ fn apply_disambig_rule(rule: &CompiledDisambig, tokens: &mut [Token]) {
                 if antipatterns_suppress(&rule.antipatterns, tokens, ti, end) {
                     ti += 1; // suppressed here — let a later, non-excluded position match
                 } else {
-                    if let Some(range) = marker_token_range(rule.marker, &caps, ti, end) {
+                    if let CompiledAction::Unify { mask, .. } = &rule.action {
+                        unify_hits.push(
+                            caps.iter()
+                                .zip(mask)
+                                .filter_map(|(c, m)| if *m { *c } else { None })
+                                .collect(),
+                        );
+                    } else if let Some(range) =
+                        marker_token_range(rule.marker, &caps, ti, end)
+                    {
                         hits.push(range);
                     }
                     ti = end; // non-overlapping: resume past this match
@@ -1127,6 +1164,55 @@ fn apply_disambig_rule(rule: &CompiledDisambig, tokens: &mut [Token]) {
         for token in &mut tokens[start..end] {
             apply_action(&rule.action, token);
         }
+    }
+    for ranges in unify_hits {
+        unify_tokens(&rule.action, tokens, &ranges);
+    }
+}
+
+/// `action="unify"`: keep the readings that agree in every feature across the given token ranges.
+fn unify_tokens(action: &CompiledAction, tokens: &mut [Token], ranges: &[(usize, usize)]) {
+    let CompiledAction::Unify { features, .. } = action else {
+        return;
+    };
+    let idx: Vec<usize> = ranges.iter().flat_map(|&(a, b)| a..b).collect();
+    if idx.len() < 2 || features.is_empty() {
+        return;
+    }
+    // Enumerate class combinations (one class per feature).
+    let mut combos: Vec<Vec<usize>> = vec![Vec::new()];
+    for f in features {
+        combos = combos
+            .into_iter()
+            .flat_map(|c| {
+                (0..f.len()).map(move |k| {
+                    let mut n = c.clone();
+                    n.push(k);
+                    n
+                })
+            })
+            .collect();
+    }
+    let fits = |tag: &str, combo: &[usize]| {
+        combo
+            .iter()
+            .enumerate()
+            .all(|(fi, &k)| features[fi][k].matches(tag))
+    };
+    let viable: Vec<&Vec<usize>> = combos
+        .iter()
+        .filter(|c| {
+            idx.iter()
+                .all(|&i| tokens[i].tags.iter().any(|t| fits(t, c)))
+        })
+        .collect();
+    if viable.is_empty() {
+        return;
+    }
+    for &i in &idx {
+        tokens[i]
+            .tags
+            .retain(|t| viable.iter().any(|c| fits(t, c)));
     }
 }
 
@@ -1181,6 +1267,7 @@ fn apply_action(action: &CompiledAction, token: &mut Token) {
                 token.lemmas.retain(|l| !lemmas.iter().any(|rm| rm == l));
             }
         }
+        CompiledAction::Unify { .. } => {}
         CompiledAction::Filter { tags } => {
             if !tags.is_empty() {
                 let kept: Vec<String> = token
@@ -1265,6 +1352,13 @@ fn compile_action(a: &TagAction) -> Option<CompiledAction> {
             postag_regexp,
         } => CompiledAction::Filter {
             tags: tag_matches(postags, *postag_regexp)?,
+        },
+        TagAction::Unify { features, mask } => CompiledAction::Unify {
+            features: features
+                .iter()
+                .map(|f| tag_matches(f, true))
+                .collect::<Option<Vec<_>>>()?,
+            mask: mask.clone(),
         },
         _ => return None, // TagAction::Unsupported (and any future variant)
     })
