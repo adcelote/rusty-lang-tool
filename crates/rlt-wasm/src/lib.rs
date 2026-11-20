@@ -146,6 +146,40 @@ impl RltChecker {
         })
     }
 
+    /// Like [`with_native_speller`](Self::with_native_speller) plus the optional `synth.fst`
+    /// (morphological synthesis for suggestions such as "ein Mann" → "einen Mann"). Pass an empty
+    /// `synth_fst` to skip it.
+    ///
+    /// # Errors
+    /// Returns a JS error if any artifact buffer is invalid.
+    pub fn with_native_full(
+        lang: &str,
+        segment_srx: &str,
+        tagger: &[u8],
+        disambig: &[u8],
+        ir_blob: &[u8],
+        speller_fst: &[u8],
+        synth_fst: &[u8],
+    ) -> Result<RltChecker, JsValue> {
+        console_error_panic_hook::set_once();
+        let spell = lang_spell(lang)?;
+        let mut engine = load_native_engine(lang, segment_srx, tagger, disambig)?;
+        if !speller_fst.is_empty() {
+            engine = engine
+                .with_speller(speller_fst.to_vec())
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        }
+        let mut ir = load_ir(ir_blob)?;
+        if !synth_fst.is_empty() {
+            let synth = rlt_native::FstSynthesizer::from_bytes(synth_fst.to_vec())
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            ir = ir.with_synthesizer(synth);
+        }
+        Ok(Self {
+            inner: Box::new(spell_checker(Composite::new(engine, ir), spell)),
+        })
+    }
+
     /// Like [`with_native`](Self::with_native) but also runs the **L3 confusion layer** — real-word
     /// error detection (their/there, affect/effect) from the `confusion.rkyv` artifact. Stacks on top
     /// of L1+L2 via `WithConfusion`; needs no input beyond the confusion blob (it reads the POS tags the
