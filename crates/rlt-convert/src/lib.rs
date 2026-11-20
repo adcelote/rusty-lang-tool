@@ -851,7 +851,6 @@ fn push_text(parts: &mut Vec<SugPart>, text: &str) {
 /// Java filter classes that only veto (never rewrite) a match; see the Filter arm in rule lowering.
 const PASS_THROUGH_FILTERS: &[&str] = &[
     "RemoveUnknownCompoundsFilter",
-    "PotentialCompoundFilter",
     "ValidWordFilter",
 ];
 
