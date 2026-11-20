@@ -665,11 +665,7 @@ impl TokenMatcher {
             }
         }
         let token = &tokens[k];
-        let mut hit = self.constraint(token);
-        if self.negate {
-            hit = !hit;
-        }
-        if !hit {
+        if !self.evaluate(token) {
             return false;
         }
         // Disqualified if any exception matches: `current` ones against this token, `previous` ones
@@ -683,8 +679,18 @@ impl TokenMatcher {
     }
 
     fn exception_hits(&self, token: &Token) -> bool {
-        let m = self.constraint(token);
-        if self.negate { !m } else { m }
+        self.evaluate(token)
+    }
+
+    /// The constraint with `negate` applied. When `negate_pos` is also set, `negate` covers only the
+    /// text (the POS constraint carries its own negation).
+    fn evaluate(&self, token: &Token) -> bool {
+        let (text_ok, tag_ok) = self.parts(token);
+        if self.negate_pos && self.postag.is_some() {
+            (text_ok != self.negate) && tag_ok
+        } else {
+            (text_ok && tag_ok) != self.negate
+        }
     }
 
     /// Whether `token` matches one of this matcher's `scope="next"` exceptions, i.e. may be neither
@@ -695,8 +701,8 @@ impl TokenMatcher {
             .any(|e| e.scope == ExceptionScope::Next && e.exception_hits(token))
     }
 
-    /// The raw text-AND-POS constraint, ignoring negation/exceptions.
-    fn constraint(&self, token: &Token) -> bool {
+    /// The raw text and POS constraints separately (POS already honours `negate_pos`).
+    fn parts(&self, token: &Token) -> (bool, bool) {
         let text_ok = match &self.text {
             None => true,
             // `inflected="yes"` applies to regexes too: the expression is matched against the lemmas.
@@ -725,7 +731,7 @@ impl TokenMatcher {
             Some(TagMatch::Regex(re)) => token.tags.iter().any(|t| re.is_match(t)),
             Some(TagMatch::Literal(p)) => token.tags.iter().any(|t| t == p),
         };
-        text_ok && tag_ok
+        (text_ok, tag_ok)
     }
 }
 
