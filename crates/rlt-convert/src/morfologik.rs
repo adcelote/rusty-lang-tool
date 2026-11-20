@@ -173,7 +173,11 @@ pub fn read_speller_words(dict: &[u8], meta: &DictMeta) -> Result<Vec<(String, u
 ///
 /// # Errors
 /// Returns an error if the files are unreadable or not a supported automaton.
-pub fn build_speller_fst(dict: &std::path::Path, info: &std::path::Path, out: &std::path::Path) -> Result<usize> {
+pub fn build_speller_fst(
+    dict: &std::path::Path,
+    info: &std::path::Path,
+    out: &std::path::Path,
+) -> Result<usize> {
     let meta = parse_info(&std::fs::read_to_string(info)?)?;
     let mut words = read_speller_words(&std::fs::read(dict)?, &meta)?;
     // fst needs strictly ascending byte-order keys; keep the highest frequency of any duplicate.
@@ -1032,5 +1036,4 @@ mod tests {
             "actionable error: {err}"
         );
     }
-
 }

@@ -11,7 +11,10 @@
 #![forbid(unsafe_code)]
 
 mod compound;
+mod synth;
 mod tagger;
+
+pub use synth::{FstSynthesizer, build_synth};
 
 pub use tagger::{Tagger, TaggerError, WordData, build_artifact, build_from_triples};
 
@@ -240,7 +243,10 @@ impl Engine for NativeEngine {
     fn is_known(&self, word: &str) -> bool {
         let key = self.lookup_key(word);
         self.tagger.is_known(&key)
-            || self.speller.as_ref().is_some_and(|m| m.contains_key(key.as_bytes()))
+            || self
+                .speller
+                .as_ref()
+                .is_some_and(|m| m.contains_key(key.as_bytes()))
             || (self.compound_fallback
                 && self
                     .compounds

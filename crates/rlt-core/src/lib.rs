@@ -15,15 +15,15 @@
 
 #![forbid(unsafe_code)]
 
+mod agree;
 mod disambig;
 mod matcher;
-mod agree;
 mod spell;
 #[doc(hidden)]
 pub use spell::fuzz_edits1;
 
 pub use disambig::ConfusionChecker;
-pub use matcher::{Disambiguator, IrMatcher};
+pub use matcher::{Disambiguator, IrMatcher, Synthesizer};
 
 use serde::{Deserialize, Serialize};
 

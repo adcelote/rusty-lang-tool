@@ -761,8 +761,26 @@ fn lower_suggestion(s: &rules::SuggestionElementType) -> Option<Suggestion> {
     }
     for item in &s.content {
         let m = &item.match_.value;
-        if m.postag_replace.is_some() {
-            return None; // synthesis (generate an inflected form) — unsupported
+        if m.postag_replace.is_some() || m.postag.is_some() {
+            // Morphological synthesis: an inflected form of the matched token (or of the element's
+            // text, taken as a lemma). Needs a synthesizer at match time.
+            let lemma = m
+                .text
+                .as_ref()
+                .map(|t| t.0.trim().to_owned())
+                .filter(|t| !t.is_empty());
+            parts.push(SugPart::Synth {
+                no: m.no,
+                postag: m.postag.clone().unwrap_or_default(),
+                postag_regexp: is_yes(&m.postag_regexp),
+                postag_replace: m.postag_replace.clone(),
+                lemma,
+                case: map_case(m.case_conversion.as_ref()),
+            });
+            if let Some(after) = &item.match_.text_after {
+                push_text(&mut parts, &after.0);
+            }
+            continue;
         }
         let transform = match (m.regexp_match.as_ref(), m.regexp_replace.as_ref()) {
             (Some(rm), Some(rr)) => Some((rm.clone(), rr.clone())),

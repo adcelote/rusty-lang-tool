@@ -96,6 +96,15 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Build `synth.fst` (lemma + tag -> inflected forms) from a tagger artifact.
+    BuildSynth {
+        /// The `tagger.rkyv` artifact.
+        #[arg(long)]
+        tagger: PathBuf,
+        /// Output `synth.fst`.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Tokenize + POS-tag a sentence and print the engine's analysis (engine smoke test).
     Tokens {
         /// The sentence to analyze.
@@ -194,6 +203,15 @@ fn main() -> Result<()> {
         Command::BuildSpeller { dict, info, out } => {
             let n = rlt_convert::build_speller_fst(&dict, &info, &out)?;
             tracing::info!(words = n, out = %out.display(), "speller built");
+            Ok(())
+        }
+        Command::BuildSynth { tagger, out } => {
+            let bytes =
+                std::fs::read(&tagger).with_context(|| format!("reading {}", tagger.display()))?;
+            let tagger = rlt_native::Tagger::from_bytes(&bytes)?;
+            let fst = rlt_native::build_synth(&tagger)?;
+            std::fs::write(&out, &fst).with_context(|| format!("writing {}", out.display()))?;
+            tracing::info!(bytes = fst.len(), out = %out.display(), "synth built");
             Ok(())
         }
         Command::Tokens { text, lang } => run_tokens(&text, resolve_lang(&lang)?),
@@ -303,7 +321,16 @@ fn load_ir_matcher(cfg: &rlt_lang::LangConfig) -> Result<IrMatcher> {
             cfg.code
         )
     })?;
-    IrMatcher::from_rkyv_bytes(&bytes).map_err(|e| anyhow!("compiling IR rules from {blob}: {e}"))
+    let ir = IrMatcher::from_rkyv_bytes(&bytes)
+        .map_err(|e| anyhow!("compiling IR rules from {blob}: {e}"))?;
+    // Optional synthesis artifact: lets suggestions name inflected forms ("hat" -> "ist").
+    Ok(match std::fs::read(cfg.synth_path()) {
+        Ok(synth) => ir.with_synthesizer(
+            rlt_native::FstSynthesizer::from_bytes(synth)
+                .with_context(|| format!("loading {}", cfg.synth_path()))?,
+        ),
+        Err(_) => ir,
+    })
 }
 
 /// Load the L3 confusion model if `cfg` enables it and it's present, else an empty (no-op) checker.
@@ -343,7 +370,10 @@ fn load_tagger(cfg: &rlt_lang::LangConfig) -> Option<Tagger<RtenTagSource>> {
     }
 }
 
-fn configure<B: Engine + GrammarChecker>(c: Checker<B>, spell: &rlt_lang::SpellConfig) -> Checker<B> {
+fn configure<B: Engine + GrammarChecker>(
+    c: Checker<B>,
+    spell: &rlt_lang::SpellConfig,
+) -> Checker<B> {
     c.with_replacement_pairs(spell.replacement_pairs)
         .with_german_agreement(spell.german_agreement)
         .with_spanish_agreement(spell.spanish_agreement)
@@ -366,8 +396,11 @@ fn check_with_layers<B: Engine + GrammarChecker>(
             spell,
         )
         .check(text),
-        None => configure(Checker::with_spell(confused, spell.alphabet, spell.message), spell)
-            .check(text),
+        None => configure(
+            Checker::with_spell(confused, spell.alphabet, spell.message),
+            spell,
+        )
+        .check(text),
     }
 }
 
@@ -415,13 +448,7 @@ fn run_check(
                     "{rules} not found — spelling only (run `cargo xtask fetch-engine`)"
                 );
             }
-            check_with_layers(
-                nlprule,
-                confusion,
-                tagger,
-                &cfg.spell,
-                &text,
-            )
+            check_with_layers(nlprule, confusion, tagger, &cfg.spell, &text)
         }
         Matcher::Ir => {
             let ir = load_ir_matcher(cfg)?;

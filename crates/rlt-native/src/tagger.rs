@@ -108,6 +108,24 @@ impl Tagger {
         )
     }
 
+    /// Call `f(word, lemma, tag)` for every analysis in the lexicon (offline builds only: it walks
+    /// the whole dictionary).
+    pub fn for_each_analysis(&self, mut f: impl FnMut(&str, &str, &str)) {
+        use fst::{IntoStreamer, Streamer};
+        let mut stream = self.fst.stream().into_stream();
+        while let Some((key, idx)) = stream.next() {
+            let (Ok(word), Some(entry)) = (
+                std::str::from_utf8(key),
+                usize::try_from(idx).ok().and_then(|i| self.entries.get(i)),
+            ) else {
+                continue;
+            };
+            for &(li, ti) in entry {
+                f(word, &self.lemmas[li as usize], &self.tags[ti as usize]);
+            }
+        }
+    }
+
     /// Whether `word` is in the lexicon (the L1 spelling membership oracle).
     #[must_use]
     pub fn is_known(&self, word: &str) -> bool {
