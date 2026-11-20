@@ -504,13 +504,23 @@ fn lower_document(doc: &rules::RulesElementType) -> Vec<Rule> {
         let rules::RulesElementTypeContent::Category(cat) = item else {
             continue; // <unification> at the top level carries no rules.
         };
+        // Like LanguageTool's default level, skip disabled categories and `tags="picky"` rules.
+        if matches!(cat.default, Some(rules::CategoryDefaultType::Off))
+            || matches!(cat.tags, Some(rules::Tags::Picky))
+        {
+            continue;
+        }
         for c in &cat.content {
             match c {
-                rules::CategoryElementTypeContent::Rule(r) if rule_enabled(r.default.as_ref()) => {
+                rules::CategoryElementTypeContent::Rule(r)
+                    if rule_enabled(r.default.as_ref())
+                        && !matches!(r.tags, Some(rules::Tags::Picky)) =>
+                {
                     out.push(lower_rule(r, None, &[], None, &phrases));
                 }
                 rules::CategoryElementTypeContent::Rulegroup(g)
-                    if group_enabled(g.default.as_ref()) =>
+                    if group_enabled(g.default.as_ref())
+                        && !matches!(g.tags, Some(rules::Tags::Picky)) =>
                 {
                     // Group-level antipatterns apply to every member rule.
                     let group_aps: Vec<Vec<Construct>> = g
@@ -527,7 +537,10 @@ fn lower_document(doc: &rules::RulesElementType) -> Vec<Rule> {
                     out.extend(
                         g.rule
                             .iter()
-                            .filter(|r| rule_enabled(r.default.as_ref()))
+                            .filter(|r| {
+                                rule_enabled(r.default.as_ref())
+                                    && !matches!(r.tags, Some(rules::Tags::Picky))
+                            })
                             .map(|r| {
                                 lower_rule(r, Some(&g.id), &group_aps, g.url.as_deref(), &phrases)
                             }),
