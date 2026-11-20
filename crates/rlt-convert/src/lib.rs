@@ -999,6 +999,7 @@ fn lower_token(t: &pattern::TokenElementType) -> TokenPat {
         regexp: is_yes(&t.regexp),
         postag_regexp: is_yes(&t.postag_regexp),
         negate: is_yes(&t.negate),
+        negate_pos: is_yes(&t.negate_pos),
         inflected: is_yes(&t.inflected),
         min: t.min,
         max: t.max,
@@ -1051,6 +1052,7 @@ fn lower_exception(e: &pattern::ExceptionElementType) -> ExceptionPat {
         postag_regexp: is_yes(&e.postag_regexp),
         inflected: is_yes(&e.inflected),
         negate: is_yes(&e.negate),
+        negate_pos: is_yes(&e.negate_pos),
         case_sensitive: e.case_sensitive.as_ref().is_some_and(is_yes),
         scope: match e.scope {
             lt_schema::pattern::ExceptionScopeType::Current => ExceptionScope::Current,

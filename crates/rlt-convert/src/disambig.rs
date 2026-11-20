@@ -171,6 +171,7 @@ fn lower_token(t: &XToken) -> Option<TokenPat> {
         regexp: is_yes(t.regexp.as_deref()),
         postag_regexp: is_yes(t.postag_regexp.as_deref()),
         negate: is_yes(t.negate.as_deref()),
+        negate_pos: is_yes(t.negate_pos.as_deref()),
         inflected: is_yes(t.inflected.as_deref()),
         min: t.min,
         max: t.max,
@@ -189,6 +190,7 @@ fn lower_exception(e: &XException) -> ExceptionPat {
         postag_regexp: is_yes(e.postag_regexp.as_deref()),
         inflected: is_yes(e.inflected.as_deref()),
         negate: is_yes(e.negate.as_deref()),
+        negate_pos: is_yes(e.negate_pos.as_deref()),
         case_sensitive: is_yes(e.case_sensitive.as_deref()),
         scope: match e.scope.as_deref() {
             Some("next") => ExceptionScope::Next,
@@ -320,6 +322,8 @@ struct XToken {
     regexp: Option<String>,
     #[serde(rename = "@negate")]
     negate: Option<String>,
+    #[serde(rename = "@negate_pos")]
+    negate_pos: Option<String>,
     #[serde(rename = "@inflected")]
     inflected: Option<String>,
     #[serde(rename = "@min")]
@@ -352,6 +356,8 @@ struct XException {
     regexp: Option<String>,
     #[serde(rename = "@negate")]
     negate: Option<String>,
+    #[serde(rename = "@negate_pos")]
+    negate_pos: Option<String>,
     #[serde(rename = "@inflected")]
     inflected: Option<String>,
     #[serde(rename = "@case_sensitive")]

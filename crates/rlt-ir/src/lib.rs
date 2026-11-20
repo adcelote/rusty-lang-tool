@@ -541,6 +541,9 @@ pub struct TokenPat {
     pub postag_regexp: bool,
     /// `negate="yes"`: the token matches when it does *not* satisfy the constraint.
     pub negate: bool,
+    /// `negate_pos="yes"`: only the POS-tag constraint is negated — the token's text must match but
+    /// none of its tags may match [`postag`](Self::postag).
+    pub negate_pos: bool,
     /// `inflected="yes"`: match any inflected form of [`text`](Self::text) as a lemma.
     pub inflected: bool,
     /// `min`: minimum number of consecutive tokens this element matches.
@@ -607,6 +610,8 @@ pub struct ExceptionPat {
     pub inflected: bool,
     /// `negate="yes"`: the exception is satisfied when it does *not* match.
     pub negate: bool,
+    /// `negate_pos="yes"`: only the POS-tag constraint of the exception is negated.
+    pub negate_pos: bool,
     /// `case_sensitive="yes"`: match text case-sensitively.
     pub case_sensitive: bool,
     /// `scope`: which token the exception is checked against (`current`, `next` or `previous`).

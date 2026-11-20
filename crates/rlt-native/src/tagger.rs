@@ -143,6 +143,22 @@ impl Tagger {
         }
     }
 
+    /// Add the analyses stored under exactly `key` (no lower-case fallback) to `token`.
+    pub fn tag_token_as_exact(&self, token: &mut Token, key: &str) {
+        let Some(entry) = self
+            .fst
+            .get(key.as_bytes())
+            .and_then(|i| usize::try_from(i).ok())
+            .and_then(|i| self.entries.get(i))
+        else {
+            return;
+        };
+        for &(li, ti) in entry {
+            push_unique(&mut token.tags, &self.tags[ti as usize]);
+            push_unique(&mut token.lemmas, &self.lemmas[li as usize]);
+        }
+    }
+
     /// Tag `token` from the lexicon entry for `key` — the surface form after the engine's
     /// normalization (e.g. Arabic tashkeel stripped), so a vocalized word resolves to its unvocalized
     /// dict entry while `token.text`/`span` keep the original marked bytes.

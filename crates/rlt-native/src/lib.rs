@@ -202,13 +202,21 @@ impl Engine for NativeEngine {
             if !self.elision.is_empty() {
                 sentence = apply_elision(sentence, self.elision);
             }
-            for token in &mut sentence {
+            for (position, token) in sentence.iter_mut().enumerate() {
                 // Tag by the normalized lookup key (Arabic: tashkeel stripped) while preserving the
                 // token's surface text/span. en/de/ru + unvocalized input take the existing zero-alloc
                 // `tag_token` path; only marked input allocates a stripped key.
                 match self.lookup_key(&token.text) {
                     Cow::Borrowed(_) => self.tagger.tag_token(token),
                     Cow::Owned(key) => self.tagger.tag_token_as(token, &key),
+                }
+                // A capitalised sentence-initial word may be an ordinary lower-case word ("Ich" is also
+                // the pronoun "ich", "Sie" also "sie"): add the lower-case readings, as LanguageTool does.
+                if position == 1 && token.text.chars().next().is_some_and(char::is_uppercase) {
+                    let lower = token.text.to_lowercase();
+                    if lower != token.text {
+                        self.tagger.tag_token_as_exact(token, &lower);
+                    }
                 }
                 // Out-of-lexicon word + a compounding language → try a compound split, taking the head
                 // constituent's analyses (so e.g. German `Haustür` is tagged, not flagged unknown).

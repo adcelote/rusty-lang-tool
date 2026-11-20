@@ -254,6 +254,8 @@ struct TokenMatcher {
     postag: Option<TagMatch>,
     inflected: bool,
     negate: bool,
+    /// `negate_pos`: the POS-tag constraint alone is negated.
+    negate_pos: bool,
     /// `spacebefore`: `Some(true)` requires whitespace before the token, `Some(false)` forbids it,
     /// `None` ignores it (the default). Checked against the gap between adjacent token spans.
     space_before: Option<bool>,
@@ -557,6 +559,7 @@ fn compile_token(t: &TokenPat) -> Option<TokenMatcher> {
         postag,
         inflected: t.inflected,
         negate: t.negate,
+        negate_pos: t.negate_pos,
         space_before: t.space_before,
         exceptions,
         scope: ExceptionScope::Current,
@@ -576,6 +579,7 @@ fn compile_exception(e: &ExceptionPat) -> Option<TokenMatcher> {
         postag,
         inflected: e.inflected,
         negate: e.negate,
+        negate_pos: e.negate_pos,
         space_before: None, // exceptions constrain the token's content, not its spacing
         exceptions: Vec::new(),
         scope: e.scope,
@@ -695,6 +699,10 @@ impl TokenMatcher {
     fn constraint(&self, token: &Token) -> bool {
         let text_ok = match &self.text {
             None => true,
+            // `inflected="yes"` applies to regexes too: the expression is matched against the lemmas.
+            Some(TextMatch::Regex(re)) if self.inflected => {
+                token.lemmas.iter().any(|l| re.is_match(l))
+            }
             Some(TextMatch::Regex(re)) => re.is_match(&token.text),
             Some(TextMatch::Literal {
                 value,
@@ -709,6 +717,11 @@ impl TokenMatcher {
         };
         let tag_ok = match &self.postag {
             None => true,
+            // `negate_pos`: LanguageTool negates per reading — the token qualifies when it has a
+            // reading that does *not* match (so "es" = {NOM, AKK} is not "only nominative").
+            Some(m) if self.negate_pos => {
+                token.tags.is_empty() || token.tags.iter().any(|t| !m.matches(t))
+            }
             Some(TagMatch::Regex(re)) => token.tags.iter().any(|t| re.is_match(t)),
             Some(TagMatch::Literal(p)) => token.tags.iter().any(|t| t == p),
         };
