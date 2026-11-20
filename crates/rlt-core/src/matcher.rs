@@ -789,10 +789,9 @@ fn match_elements(
         for next in base..=skip_end {
             // `scope="next"` exceptions: the token after the match, and every token the skip passes
             // over, must not hit them (only relevant while another element still has to match).
-            if ei + 1 < elements.len()
-                && tokens
-                    .get(next)
-                    .is_some_and(|t| elem.matcher.blocks_next(t))
+            if tokens
+                .get(next)
+                .is_some_and(|t| elem.matcher.blocks_next(t))
             {
                 break;
             }
